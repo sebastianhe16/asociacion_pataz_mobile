@@ -22,6 +22,7 @@ export const DATABASE_SCHEMA = `
   CREATE TABLE IF NOT EXISTS movimientos_almacen (
     id TEXT PRIMARY KEY NOT NULL,
     tipo TEXT NOT NULL CHECK (tipo IN ('ENTRADA', 'SALIDA')),
+    origen TEXT CHECK (origen IN ('COMPRA', 'DONACION') OR origen IS NULL),
     insumo_id TEXT NOT NULL REFERENCES insumos(id),
     cantidad REAL NOT NULL CHECK (cantidad > 0),
     responsable TEXT NOT NULL,

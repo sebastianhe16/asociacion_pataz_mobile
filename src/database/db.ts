@@ -1,8 +1,23 @@
 import * as SQLite from 'expo-sqlite';
+import * as Crypto from 'expo-crypto';
+import type { Almacen, Insumo, OrigenMovimiento, TipoMovimiento } from '../core/types';
 import { DATABASE_SCHEMA } from './schema';
 
 const DATABASE_NAME = 'asociacion_pataz.db';
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
+
+export interface InventoryItem extends Insumo {
+  almacenNombre: string;
+}
+
+export interface RegisterWarehouseMovementInput {
+  tipo: TipoMovimiento;
+  origen: OrigenMovimiento | null;
+  insumoId: string;
+  cantidad: number;
+  responsable: string;
+  destinoCaserio: string;
+}
 
 const almacenes = [
   { id: 'alm-lavasen', nombre: 'Lavasen', ubicacion: 'Base logística Lavasen, Pataz' },
@@ -45,6 +60,14 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
 export async function initDatabase(): Promise<void> {
   const database = await getDatabase();
   await database.execAsync(DATABASE_SCHEMA);
+  const movementColumns = await database.getAllAsync<{ name: string }>(
+    'PRAGMA table_info(movimientos_almacen)',
+  );
+  if (!movementColumns.some(({ name }) => name === 'origen')) {
+    await database.execAsync(
+      "ALTER TABLE movimientos_almacen ADD COLUMN origen TEXT CHECK (origen IN ('COMPRA', 'DONACION') OR origen IS NULL)",
+    );
+  }
   await seedInitialData(database);
 }
 
@@ -101,4 +124,124 @@ export async function getPendingRecordCount(): Promise<number> {
   );
 
   return result?.count ?? 0;
+}
+
+export async function getWarehouses(): Promise<Almacen[]> {
+  const database = await getDatabase();
+  return database.getAllAsync<Almacen>(
+    'SELECT id, nombre, ubicacion FROM almacenes ORDER BY nombre ASC',
+  );
+}
+
+export async function getInventoryByWarehouse(
+  warehouseId: string,
+): Promise<InventoryItem[]> {
+  const database = await getDatabase();
+  return database.getAllAsync<InventoryItem>(
+    `SELECT
+      i.id,
+      i.codigo,
+      i.nombre,
+      i.categoria,
+      i.unidad,
+      i.stock_actual AS stockActual,
+      i.stock_minimo AS stockMinimo,
+      i.almacen_id AS almacenId,
+      a.nombre AS almacenNombre
+    FROM insumos i
+    INNER JOIN almacenes a ON a.id = i.almacen_id
+    WHERE i.almacen_id = ?
+    ORDER BY i.nombre COLLATE NOCASE ASC`,
+    warehouseId,
+  );
+}
+
+export async function findInventoryItemByCode(code: string): Promise<InventoryItem | null> {
+  const database = await getDatabase();
+  return database.getFirstAsync<InventoryItem>(
+    `SELECT
+      i.id,
+      i.codigo,
+      i.nombre,
+      i.categoria,
+      i.unidad,
+      i.stock_actual AS stockActual,
+      i.stock_minimo AS stockMinimo,
+      i.almacen_id AS almacenId,
+      a.nombre AS almacenNombre
+    FROM insumos i
+    INNER JOIN almacenes a ON a.id = i.almacen_id
+    WHERE i.codigo = ? OR i.id = ?
+    LIMIT 1`,
+    code.trim(),
+    code.trim(),
+  );
+}
+
+export async function registerWarehouseMovement(
+  input: RegisterWarehouseMovementInput,
+): Promise<void> {
+  const responsable = input.responsable.trim();
+  const destinoCaserio = input.destinoCaserio.trim();
+
+  if (!Number.isFinite(input.cantidad) || input.cantidad <= 0) {
+    throw new Error('La cantidad debe ser un número mayor que cero.');
+  }
+  if (!responsable) {
+    throw new Error('Ingresa el nombre del responsable.');
+  }
+  if (input.tipo === 'SALIDA' && !destinoCaserio) {
+    throw new Error('Indica el caserío o proyecto de destino para registrar una salida.');
+  }
+  if (input.tipo === 'ENTRADA' && !input.origen) {
+    throw new Error('Selecciona si la entrada corresponde a una compra o donación.');
+  }
+
+  const database = await getDatabase();
+  const itemExists = await database.getFirstAsync<{ id: string }>(
+    'SELECT id FROM insumos WHERE id = ?',
+    input.insumoId,
+  );
+  if (!itemExists) {
+    throw new Error('El insumo seleccionado ya no existe en el inventario local.');
+  }
+
+  await database.withTransactionAsync(async () => {
+    const stockUpdate = input.tipo === 'ENTRADA'
+      ? await database.runAsync(
+        'UPDATE insumos SET stock_actual = stock_actual + ? WHERE id = ?',
+        input.cantidad,
+        input.insumoId,
+      )
+      : await database.runAsync(
+        `UPDATE insumos
+         SET stock_actual = stock_actual - ?
+         WHERE id = ? AND stock_actual >= ?`,
+        input.cantidad,
+        input.insumoId,
+        input.cantidad,
+      );
+
+    if (stockUpdate.changes !== 1) {
+      throw new Error(
+        input.tipo === 'SALIDA'
+          ? 'Stock insuficiente para completar esta salida.'
+          : 'No se pudo actualizar el stock del insumo.',
+      );
+    }
+
+    await database.runAsync(
+      `INSERT INTO movimientos_almacen
+        (id, tipo, origen, insumo_id, cantidad, responsable, destino_caserio, timestamp, sync_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
+      Crypto.randomUUID(),
+      input.tipo,
+      input.origen,
+      input.insumoId,
+      input.cantidad,
+      responsable,
+      destinoCaserio || null,
+      new Date().toISOString(),
+    );
+  });
 }

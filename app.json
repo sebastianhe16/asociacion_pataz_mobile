@@ -23,7 +23,14 @@
     },
     "plugins": [
       "expo-router",
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Permitir que Asociación Pataz escanee códigos de insumos.",
+          "recordAudioAndroid": false
+        }
+      ]
     ]
   }
 }

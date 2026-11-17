@@ -2,6 +2,7 @@ export type CategoriaInsumo = 'Agrícola' | 'Salud' | 'Educación';
 export type EjeProyecto = 'Salud' | 'Agricultura' | 'Educación';
 export type SyncStatus = 'PENDING' | 'SYNCED' | 'ERROR';
 export type TipoMovimiento = 'ENTRADA' | 'SALIDA';
+export type OrigenMovimiento = 'COMPRA' | 'DONACION';
 
 export interface Almacen {
   id: string;
@@ -23,6 +24,7 @@ export interface Insumo {
 export interface MovimientoAlmacen {
   id: string;
   tipo: TipoMovimiento;
+  origen: OrigenMovimiento | null;
   insumoId: string;
   cantidad: number;
   responsable: string;
