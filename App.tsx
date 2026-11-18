@@ -77,7 +77,7 @@ export default function App() {
     <SafeAreaProvider>
       <NetworkProvider>
         <SyncProvider>
-          <StatusBar style="light" />
+          <StatusBar style="dark" />
           <Slot />
         </SyncProvider>
       </NetworkProvider>

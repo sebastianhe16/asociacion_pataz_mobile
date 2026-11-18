@@ -30,6 +30,12 @@
           "cameraPermission": "Permitir que Asociación Pataz escanee códigos de insumos.",
           "recordAudioAndroid": false
         }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Permitir que Asociación Pataz registre coordenadas de las visitas de campo."
+        }
       ]
     ]
   }

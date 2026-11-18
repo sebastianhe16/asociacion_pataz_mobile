@@ -8,12 +8,19 @@ import {
   useState,
   type PropsWithChildren,
 } from 'react';
-import { getPendingRecordCount } from '../../database/db';
+import { getSyncDashboardData } from '../../database/db';
+import type { SyncQueueEntry } from '../../core/types';
 import { useNetworkStatus } from './NetworkProvider';
 import { syncPendingRecords, type SyncResult } from './sisgeapSyncService';
 
+const EMPTY_QUEUE: SyncQueueEntry[] = [];
+
 interface SyncContextValue {
   pendingCount: number;
+  pendingMovementCount: number;
+  pendingFieldCount: number;
+  queue: SyncQueueEntry[];
+  isQueueLoading: boolean;
   isSyncing: boolean;
   lastResult: SyncResult | null;
   errorMessage: string | null;
@@ -25,28 +32,40 @@ const SyncContext = createContext<SyncContextValue | null>(null);
 
 export function SyncProvider({ children }: PropsWithChildren) {
   const { isOnline } = useNetworkStatus();
-  const [pendingCount, setPendingCount] = useState(0);
+  const [dashboard, setDashboard] = useState<{
+    pendingMovementCount: number;
+    pendingFieldCount: number;
+    queue: SyncQueueEntry[];
+  } | null>(null);
+  const [isQueueLoading, setIsQueueLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastResult, setLastResult] = useState<SyncResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const pendingMovementCount = dashboard?.pendingMovementCount ?? 0;
+  const pendingFieldCount = dashboard?.pendingFieldCount ?? 0;
+  const pendingCount = pendingMovementCount + pendingFieldCount;
+  const queue = dashboard?.queue ?? EMPTY_QUEUE;
 
   const refreshPendingCount = useCallback(async () => {
+    setIsQueueLoading(true);
     try {
-      setPendingCount(await getPendingRecordCount());
+      setDashboard(await getSyncDashboardData());
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : 'No se pudo consultar la cola local.',
       );
+    } finally {
+      setIsQueueLoading(false);
     }
   }, []);
 
   useEffect(() => {
     let active = true;
 
-    getPendingRecordCount()
-      .then((count) => {
+    getSyncDashboardData()
+      .then((data) => {
         if (active) {
-          setPendingCount(count);
+          setDashboard(data);
         }
       })
       .catch((error: unknown) => {
@@ -54,6 +73,11 @@ export function SyncProvider({ children }: PropsWithChildren) {
           setErrorMessage(
             error instanceof Error ? error.message : 'No se pudo consultar la cola local.',
           );
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setIsQueueLoading(false);
         }
       });
 
@@ -73,7 +97,7 @@ export function SyncProvider({ children }: PropsWithChildren) {
     try {
       const result = await syncPendingRecords(isOnline);
       setLastResult(result);
-      setPendingCount(result.remainingCount);
+      await refreshPendingCount();
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : 'No se pudo sincronizar con SISGEAP.',
@@ -96,13 +120,28 @@ export function SyncProvider({ children }: PropsWithChildren) {
   const value = useMemo(
     () => ({
       pendingCount,
+      pendingMovementCount,
+      pendingFieldCount,
+      queue,
+      isQueueLoading,
       isSyncing,
       lastResult,
       errorMessage,
       refreshPendingCount,
       synchronize,
     }),
-    [pendingCount, isSyncing, lastResult, errorMessage, refreshPendingCount, synchronize],
+    [
+      pendingCount,
+      pendingMovementCount,
+      pendingFieldCount,
+      queue,
+      isQueueLoading,
+      isSyncing,
+      lastResult,
+      errorMessage,
+      refreshPendingCount,
+      synchronize,
+    ],
   );
 
   return <SyncContext.Provider value={value}>{children}</SyncContext.Provider>;

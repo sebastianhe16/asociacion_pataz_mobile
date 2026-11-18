@@ -1,1 +1,1 @@
-export { default } from '../../screens/SyncScreen';
+export { default } from '../../screens/SincronizacionScreen';

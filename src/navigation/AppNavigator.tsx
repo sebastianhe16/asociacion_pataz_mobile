@@ -2,12 +2,15 @@ import { Tabs } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { View } from 'react-native';
 import { colors } from '../core/theme';
-import { ConnectionStatusBar } from './ConnectionStatusBar';
+import { InstitutionalHeader } from '../components/InstitutionalHeader';
+import { useSyncStatus } from '../services/sync/SyncProvider';
 
 export default function AppNavigator() {
+  const { pendingCount } = useSyncStatus();
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
-      <ConnectionStatusBar />
+      <InstitutionalHeader />
       <Tabs
         screenOptions={{
           headerShown: false,
@@ -61,6 +64,8 @@ export default function AppNavigator() {
           name="sync"
           options={{
             title: 'Sincronizar',
+            tabBarBadge: pendingCount > 0 ? pendingCount : undefined,
+            tabBarBadgeStyle: { backgroundColor: colors.offline, color: colors.onPrimary },
             tabBarIcon: ({ color, size }) => (
               <MaterialCommunityIcons name="sync" color={String(color)} size={size} />
             ),

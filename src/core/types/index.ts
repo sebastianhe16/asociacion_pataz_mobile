@@ -1,5 +1,9 @@
 export type CategoriaInsumo = 'Agrícola' | 'Salud' | 'Educación';
-export type EjeProyecto = 'Salud' | 'Agricultura' | 'Educación';
+export type EjeProyecto =
+  | 'Salud'
+  | 'Agricultura'
+  | 'Educación'
+  | 'Agua y saneamiento';
 export type SyncStatus = 'PENDING' | 'SYNCED' | 'ERROR';
 export type TipoMovimiento = 'ENTRADA' | 'SALIDA';
 export type OrigenMovimiento = 'COMPRA' | 'DONACION';
@@ -41,6 +45,13 @@ export interface ProyectoCampo {
   caserio: string;
 }
 
+export interface ProyectoCampoResumen extends ProyectoCampo {
+  totalFichas: number;
+  pendientesSync: number;
+  erroresSync: number;
+  fichasSincronizadas: number;
+}
+
 export interface FichaCampo {
   id: string;
   proyectoId: string;
@@ -54,8 +65,33 @@ export interface FichaCampo {
   syncStatus: SyncStatus;
 }
 
+export interface NuevaFichaCampo {
+  proyectoId: string;
+  beneficiarioDni: string;
+  beneficiarioNombre: string;
+  actividadRealizada: string;
+  observaciones: string;
+  latitud: number | null;
+  longitud: number | null;
+}
+
 export type SyncEntityType = 'MOVIMIENTO_ALMACEN' | 'FICHA_CAMPO';
 export type SyncLogStatus = 'SUCCESS' | 'ERROR';
+
+export interface SyncQueueEntry {
+  id: string;
+  entityType: SyncEntityType;
+  title: string;
+  detail: string;
+  timestamp: string;
+  syncStatus: SyncStatus;
+}
+
+export interface SyncDashboardData {
+  pendingMovementCount: number;
+  pendingFieldCount: number;
+  queue: SyncQueueEntry[];
+}
 
 export interface SyncLog {
   id: string;

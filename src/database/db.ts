@@ -1,6 +1,15 @@
 import * as SQLite from 'expo-sqlite';
 import * as Crypto from 'expo-crypto';
-import type { Almacen, Insumo, OrigenMovimiento, TipoMovimiento } from '../core/types';
+import type {
+  Almacen,
+  Insumo,
+  NuevaFichaCampo,
+  OrigenMovimiento,
+  ProyectoCampoResumen,
+  SyncDashboardData,
+  SyncQueueEntry,
+  TipoMovimiento,
+} from '../core/types';
 import { DATABASE_SCHEMA } from './schema';
 
 const DATABASE_NAME = 'asociacion_pataz.db';
@@ -42,6 +51,28 @@ const proyectos = [
   { id: 'proy-agri-papa', codigo: 'P03-AGR-PAPA', nombre: 'Fortalecimiento de cultivo de papa', eje: 'Agricultura', caserio: 'Lavasen' },
   { id: 'proy-agri-frutales', codigo: 'P04-AGR-FRUTAL', nombre: 'Instalación de frutales altoandinos', eje: 'Agricultura', caserio: 'Marañón' },
   { id: 'proy-educ-escuela', codigo: 'P05-EDU-ESCUELA', nombre: 'Apoyo a la educación rural', eje: 'Educación', caserio: 'Pataz' },
+  { id: 'proy-salud-nutricion', codigo: 'P06-SAL-NUTRI', nombre: 'Nutrición y desarrollo infantil temprano', eje: 'Salud', caserio: 'Suyubamba' },
+  { id: 'proy-salud-materna', codigo: 'P07-SAL-MATERNA', nombre: 'Salud materna y acompañamiento prenatal', eje: 'Salud', caserio: 'Vijus' },
+  { id: 'proy-salud-promotores', codigo: 'P08-SAL-PROMO', nombre: 'Formación de promotores comunitarios de salud', eje: 'Salud', caserio: 'Shicun' },
+  { id: 'proy-salud-bucal', codigo: 'P09-SAL-BUCAL', nombre: 'Jornadas de salud bucal comunitaria', eje: 'Salud', caserio: 'Chuquitambo' },
+  { id: 'proy-salud-adolescencia', codigo: 'P10-SAL-ADOLESCENCIA', nombre: 'Bienestar y salud para adolescentes', eje: 'Salud', caserio: 'Campamento' },
+  { id: 'proy-agri-semillas', codigo: 'P11-AGR-SEMILLAS', nombre: 'Producción local de semillas certificadas', eje: 'Agricultura', caserio: 'Cachica' },
+  { id: 'proy-agri-huertos', codigo: 'P12-AGR-HUERTOS', nombre: 'Huertos familiares y seguridad alimentaria', eje: 'Agricultura', caserio: 'Pías' },
+  { id: 'proy-agri-ganaderia', codigo: 'P13-AGR-GANADERIA', nombre: 'Mejoramiento de crianza de ganado menor', eje: 'Agricultura', caserio: 'Alacoto' },
+  { id: 'proy-agri-suelos', codigo: 'P14-AGR-SUELOS', nombre: 'Conservación de suelos y abonos orgánicos', eje: 'Agricultura', caserio: 'Vista Florida' },
+  { id: 'proy-agri-riego', codigo: 'P15-AGR-RIEGO', nombre: 'Riego tecnificado para agricultura familiar', eje: 'Agricultura', caserio: 'Huariracra' },
+  { id: 'proy-agri-forestal', codigo: 'P16-AGR-FORESTAL', nombre: 'Reforestación con especies nativas altoandinas', eje: 'Agricultura', caserio: 'Los Alisos' },
+  { id: 'proy-educ-lectura', codigo: 'P17-EDU-LECTURA', nombre: 'Lectura y comprensión en escuelas rurales', eje: 'Educación', caserio: 'Monchacap' },
+  { id: 'proy-educ-becas', codigo: 'P18-EDU-BECAS', nombre: 'Acompañamiento educativo y continuidad escolar', eje: 'Educación', caserio: 'Bella Aurora' },
+  { id: 'proy-educ-materiales', codigo: 'P19-EDU-MATERIALES', nombre: 'Acceso a materiales para aprendizaje', eje: 'Educación', caserio: 'Shorey Chico' },
+  { id: 'proy-educ-docentes', codigo: 'P20-EDU-DOCENTES', nombre: 'Fortalecimiento de capacidades docentes', eje: 'Educación', caserio: 'Nuevo Progreso' },
+  { id: 'proy-educ-digital', codigo: 'P21-EDU-DIGITAL', nombre: 'Recursos digitales para educación rural', eje: 'Educación', caserio: 'Tayabamba' },
+  { id: 'proy-agua-potable', codigo: 'P22-AGUA-POTABLE', nombre: 'Mejoramiento del acceso a agua segura', eje: 'Agua y saneamiento', caserio: 'La Soledad' },
+  { id: 'proy-agua-jass', codigo: 'P23-AGUA-JASS', nombre: 'Fortalecimiento de juntas administradoras de agua', eje: 'Agua y saneamiento', caserio: 'Cerro Grande' },
+  { id: 'proy-agua-saneamiento', codigo: 'P24-AGUA-SANEAMIENTO', nombre: 'Educación sanitaria y saneamiento familiar', eje: 'Agua y saneamiento', caserio: 'Huaylillas' },
+  { id: 'proy-agua-cloracion', codigo: 'P25-AGUA-CLORACION', nombre: 'Vigilancia de calidad y cloración de agua', eje: 'Agua y saneamiento', caserio: 'Shiracmaca' },
+  { id: 'proy-agua-mantenimiento', codigo: 'P26-AGUA-MANTENIMIENTO', nombre: 'Mantenimiento de sistemas de agua rural', eje: 'Agua y saneamiento', caserio: 'San Fernando' },
+  { id: 'proy-agua-higiene', codigo: 'P27-AGUA-HIGIENE', nombre: 'Prácticas saludables de higiene y manejo de residuos', eje: 'Agua y saneamiento', caserio: 'Caserío El Pozo' },
 ] as const;
 
 export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
@@ -60,6 +91,7 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
 export async function initDatabase(): Promise<void> {
   const database = await getDatabase();
   await database.execAsync(DATABASE_SCHEMA);
+  await migrateProjectAxisConstraint(database);
   const movementColumns = await database.getAllAsync<{ name: string }>(
     'PRAGMA table_info(movimientos_almacen)',
   );
@@ -69,6 +101,40 @@ export async function initDatabase(): Promise<void> {
     );
   }
   await seedInitialData(database);
+}
+
+async function migrateProjectAxisConstraint(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
+  const projectTable = await database.getFirstAsync<{ sql: string | null }>(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'proyectos'",
+  );
+  if (!projectTable?.sql || projectTable.sql.includes('Agua y saneamiento')) {
+    return;
+  }
+
+  await database.execAsync('PRAGMA foreign_keys = OFF');
+  try {
+    await database.withTransactionAsync(async () => {
+      await database.execAsync(`
+        CREATE TABLE proyectos_v2 (
+          id TEXT PRIMARY KEY NOT NULL,
+          codigo TEXT NOT NULL UNIQUE,
+          nombre TEXT NOT NULL,
+          eje TEXT NOT NULL CHECK (
+            eje IN ('Salud', 'Agricultura', 'Educación', 'Agua y saneamiento')
+          ),
+          caserio TEXT NOT NULL
+        );
+        INSERT INTO proyectos_v2 (id, codigo, nombre, eje, caserio)
+          SELECT id, codigo, nombre, eje, caserio FROM proyectos;
+        DROP TABLE proyectos;
+        ALTER TABLE proyectos_v2 RENAME TO proyectos;
+      `);
+    });
+  } finally {
+    await database.execAsync('PRAGMA foreign_keys = ON');
+  }
 }
 
 export async function seedInitialData(
@@ -124,6 +190,142 @@ export async function getPendingRecordCount(): Promise<number> {
   );
 
   return result?.count ?? 0;
+}
+
+export async function getSyncDashboardData(): Promise<SyncDashboardData> {
+  const database = await getDatabase();
+  const [movementCounts, fieldCounts, movementRows, fieldRows] = await Promise.all([
+    database.getFirstAsync<{
+      pendingMovementCount: number;
+    }>(
+      `SELECT
+        COUNT(CASE WHEN sync_status IN ('PENDING', 'ERROR') THEN 1 END)
+          AS pendingMovementCount
+       FROM movimientos_almacen`,
+    ),
+    database.getFirstAsync<{ pendingFieldCount: number }>(
+      `SELECT COUNT(CASE WHEN sync_status IN ('PENDING', 'ERROR') THEN 1 END)
+         AS pendingFieldCount
+       FROM fichas_campo`,
+    ),
+    database.getAllAsync<SyncQueueEntry>(
+      `SELECT
+        m.id,
+        'MOVIMIENTO_ALMACEN' AS entityType,
+        CASE
+          WHEN m.tipo = 'ENTRADA' THEN
+            'Entrada · ' || CASE m.origen
+              WHEN 'DONACION' THEN 'Donación'
+              WHEN 'COMPRA' THEN 'Compra'
+              ELSE 'Sin origen'
+            END
+          ELSE 'Salida · ' || COALESCE(m.destino_caserio, 'Sin destino')
+        END AS title,
+        i.nombre || ' · ' || a.nombre || ' · Responsable: ' || m.responsable AS detail,
+        m.timestamp,
+        m.sync_status AS syncStatus
+      FROM movimientos_almacen m
+      INNER JOIN insumos i ON i.id = m.insumo_id
+      INNER JOIN almacenes a ON a.id = i.almacen_id
+      WHERE m.sync_status IN ('PENDING', 'ERROR')`,
+    ),
+    database.getAllAsync<SyncQueueEntry>(
+      `SELECT
+        f.id,
+        'FICHA_CAMPO' AS entityType,
+        'Ficha de campo · ' || p.codigo AS title,
+        p.nombre || ' · ' || f.beneficiario_nombre || ' · ' || p.caserio AS detail,
+        f.timestamp,
+        f.sync_status AS syncStatus
+      FROM fichas_campo f
+      INNER JOIN proyectos p ON p.id = f.proyecto_id
+      WHERE f.sync_status IN ('PENDING', 'ERROR')`,
+    ),
+  ]);
+
+  const queue = [...movementRows, ...fieldRows].sort((first, second) =>
+    first.timestamp.localeCompare(second.timestamp),
+  );
+
+  return {
+    pendingMovementCount: movementCounts?.pendingMovementCount ?? 0,
+    pendingFieldCount: fieldCounts?.pendingFieldCount ?? 0,
+    queue,
+  };
+}
+
+export async function getProjectSummaries(): Promise<ProyectoCampoResumen[]> {
+  const database = await getDatabase();
+  return database.getAllAsync<ProyectoCampoResumen>(
+    `SELECT
+      p.id,
+      p.codigo,
+      p.nombre,
+      p.eje,
+      p.caserio,
+      COUNT(f.id) AS totalFichas,
+      SUM(CASE WHEN f.sync_status = 'PENDING' THEN 1 ELSE 0 END) AS pendientesSync,
+      SUM(CASE WHEN f.sync_status = 'ERROR' THEN 1 ELSE 0 END) AS erroresSync,
+      SUM(CASE WHEN f.sync_status = 'SYNCED' THEN 1 ELSE 0 END) AS fichasSincronizadas
+    FROM proyectos p
+    LEFT JOIN fichas_campo f ON f.proyecto_id = p.id
+    GROUP BY p.id, p.codigo, p.nombre, p.eje, p.caserio
+    ORDER BY p.codigo ASC`,
+  );
+}
+
+export async function insertFichaCampo(input: NuevaFichaCampo): Promise<void> {
+  const dni = input.beneficiarioDni.trim();
+  const nombre = input.beneficiarioNombre.trim();
+  const actividad = input.actividadRealizada.trim();
+
+  if (!/^\d{8}$/.test(dni)) {
+    throw new Error('El DNI debe contener exactamente 8 dígitos.');
+  }
+  if (nombre.length < 3) {
+    throw new Error('Ingresa el nombre completo del beneficiario.');
+  }
+  if (!actividad) {
+    throw new Error('Selecciona la actividad o asistencia realizada.');
+  }
+  const hasLatitude = input.latitud !== null;
+  const hasLongitude = input.longitud !== null;
+  if (hasLatitude !== hasLongitude) {
+    throw new Error('Las coordenadas deben incluir latitud y longitud.');
+  }
+  if (
+    (input.latitud !== null &&
+      (!Number.isFinite(input.latitud) || input.latitud < -90 || input.latitud > 90)) ||
+    (input.longitud !== null &&
+      (!Number.isFinite(input.longitud) || input.longitud < -180 || input.longitud > 180))
+  ) {
+    throw new Error('Las coordenadas GPS están fuera de rango.');
+  }
+
+  const database = await getDatabase();
+  const projectExists = await database.getFirstAsync<{ id: string }>(
+    'SELECT id FROM proyectos WHERE id = ?',
+    input.proyectoId,
+  );
+  if (!projectExists) {
+    throw new Error('El proyecto seleccionado no existe en la base local.');
+  }
+
+  await database.runAsync(
+    `INSERT INTO fichas_campo
+      (id, proyecto_id, beneficiario_dni, beneficiario_nombre, actividad_realizada,
+       observaciones, latitud, longitud, timestamp, sync_status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
+    Crypto.randomUUID(),
+    input.proyectoId,
+    dni,
+    nombre,
+    actividad,
+    input.observaciones.trim(),
+    input.latitud,
+    input.longitud,
+    new Date().toISOString(),
+  );
 }
 
 export async function getWarehouses(): Promise<Almacen[]> {

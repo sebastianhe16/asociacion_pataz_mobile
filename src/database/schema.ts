@@ -36,7 +36,9 @@ export const DATABASE_SCHEMA = `
     id TEXT PRIMARY KEY NOT NULL,
     codigo TEXT NOT NULL UNIQUE,
     nombre TEXT NOT NULL,
-    eje TEXT NOT NULL CHECK (eje IN ('Salud', 'Agricultura', 'Educación')),
+    eje TEXT NOT NULL CHECK (
+      eje IN ('Salud', 'Agricultura', 'Educación', 'Agua y saneamiento')
+    ),
     caserio TEXT NOT NULL
   );
 
