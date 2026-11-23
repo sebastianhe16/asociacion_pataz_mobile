@@ -148,7 +148,7 @@ export default function ProyectosCampoScreen() {
       >
         <View style={styles.header}>
           <View style={styles.headerCopy}>
-            <Text style={styles.eyebrow}>PROYECTOS COMUNITARIOS · P1</Text>
+            <Text style={styles.eyebrow}>PROYECTOS COMUNITARIOS</Text>
             <Text style={styles.title}>Trabajo de campo</Text>
             <Text style={styles.subtitle}>
               Selecciona un proyecto para registrar una visita o actividad.
@@ -232,7 +232,9 @@ export default function ProyectosCampoScreen() {
                     <Text style={styles.groupTitle}>{group.title}</Text>
                     <Text style={styles.groupSubtitle}>{group.subtitle}</Text>
                   </View>
-                  <Text style={styles.groupCount}>{group.projects.length}</Text>
+                  <View style={styles.groupCount}>
+                    <Text style={styles.groupCountText}>{group.projects.length}</Text>
+                  </View>
                 </View>
                 <View style={styles.projectList}>
                   {group.projects.map((project) => (
@@ -470,11 +472,12 @@ const styles = StyleSheet.create({
   groupCount: {
     minWidth: 27,
     height: 27,
-    textAlign: 'center',
-    textAlignVertical: 'center',
-    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
     borderRadius: 14,
     backgroundColor: colors.surface,
+  },
+  groupCountText: {
     color: colors.textSecondary,
     fontSize: 11,
     fontWeight: '800',

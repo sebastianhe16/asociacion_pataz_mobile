@@ -27,6 +27,7 @@ import type {
 import { colors, spacing, typography } from '../core/theme';
 import {
   findInventoryItemByCode,
+  getAllInventoryItems,
   getInventoryByWarehouse,
   getWarehouses,
   registerWarehouseMovement,
@@ -52,6 +53,7 @@ export default function AlmacenesScreen() {
   const [warehouses, setWarehouses] = useState<Almacen[]>([]);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState('alm-lavasen');
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [inventoryCatalog, setInventoryCatalog] = useState<InventoryItem[]>([]);
   const [loadedWarehouseId, setLoadedWarehouseId] = useState('');
   const [screenError, setScreenError] = useState<string | null>(null);
   const [searchText, setSearchText] = useState('');
@@ -92,6 +94,26 @@ export default function AlmacenesScreen() {
       .then((rows) => {
         if (active) {
           setWarehouses(rows);
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setScreenError(getErrorMessage(error));
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    getAllInventoryItems()
+      .then((rows) => {
+        if (active) {
+          setInventoryCatalog(rows);
         }
       })
       .catch((error: unknown) => {
@@ -158,29 +180,6 @@ export default function AlmacenesScreen() {
     setMovementOpen(true);
   }, []);
 
-  const simulateScan = useCallback(async () => {
-    try {
-      const item = await findInventoryItemByCode('AG-PAPA-325');
-      if (!item) {
-        throw new Error('No se encontró el artículo de demostración en la base local.');
-      }
-
-      setSelectedWarehouseId(item.almacenId);
-      setSelectedItem(item);
-      setMovementType('ENTRADA');
-      setEntryOrigin('COMPRA');
-      setQuantity('1');
-      setResponsible('');
-      setDestination('');
-      setFormError(null);
-      setScannerOpen(false);
-      setMovementOpen(true);
-      setToastMessage(`Insumo identificado: ${item.nombre} · ${item.almacenNombre}`);
-    } catch (error) {
-      setScreenError(getErrorMessage(error));
-    }
-  }, []);
-
   const handleBarcodeScanned = useCallback(async ({ data }: BarcodeScanningResult) => {
     if (scanHandled.current) {
       return;
@@ -230,6 +229,11 @@ export default function AlmacenesScreen() {
         destinoCaserio: destination,
       });
       await loadInventory(selectedItem.almacenId);
+      try {
+        setInventoryCatalog(await getAllInventoryItems());
+      } catch (error) {
+        setScreenError(getErrorMessage(error));
+      }
       await refreshPendingCount();
       setMovementOpen(false);
       setToastMessage(
@@ -260,7 +264,7 @@ export default function AlmacenesScreen() {
       >
         <View style={styles.headingRow}>
           <View style={styles.headingCopy}>
-            <Text style={styles.eyebrow}>CONTROL LOGÍSTICO · P1</Text>
+            <Text style={styles.eyebrow}>CONTROL LOGÍSTICO</Text>
             <Text style={styles.title}>Inventario</Text>
             <Text style={styles.subtitle}>Existencias locales por almacén base.</Text>
           </View>
@@ -294,7 +298,10 @@ export default function AlmacenesScreen() {
                   {warehouse.nombre}
                 </Text>
                 <Text style={[styles.warehouseLocation, isSelected && styles.selectedSubtext]}>
-                  {warehouse.ubicacion.split(',')[0]}
+                  Base logística
+                </Text>
+                <Text style={[styles.warehouseRegion, isSelected && styles.selectedSubtext]}>
+                  {warehouse.ubicacion.split(',').slice(1).join(',').trim()}
                 </Text>
               </Pressable>
             );
@@ -422,6 +429,7 @@ export default function AlmacenesScreen() {
       <MovementModal
         visible={movementOpen}
         item={selectedItem}
+        inventoryItems={inventoryCatalog}
         type={movementType}
         origin={entryOrigin}
         quantity={quantity}
@@ -435,8 +443,11 @@ export default function AlmacenesScreen() {
         onSetQuantity={setQuantity}
         onSetResponsible={setResponsible}
         onSetDestination={setDestination}
+        onSelectItem={(item) => {
+          setSelectedItem(item);
+          setSelectedWarehouseId(item.almacenId);
+        }}
         onOpenScanner={startScanner}
-        onSimulateScan={simulateScan}
         onSubmit={handleRegisterMovement}
       />
 
@@ -514,10 +525,17 @@ function InventoryCard({ item, onPress }: InventoryCardProps) {
             </Text>
           </View>
           <View style={styles.stockStatusWrap}>
-            <View style={[styles.stockStatusDot, isLowStock ? styles.criticalDot : styles.availableDot]} />
-            <Text style={[styles.stockStatusText, isLowStock && styles.lowStockValue]}>
-              {isLowStock ? 'Stock crítico' : 'Disponible'}
-            </Text>
+            <View style={styles.stockStatusHeading}>
+              <View
+                style={[
+                  styles.stockStatusDot,
+                  isLowStock ? styles.criticalDot : styles.availableDot,
+                ]}
+              />
+              <Text style={[styles.stockStatusText, isLowStock && styles.lowStockValue]}>
+                {isLowStock ? 'Stock bajo' : 'Disponible'}
+              </Text>
+            </View>
             <Text style={styles.minimumText}>Mín. {item.stockMinimo}</Text>
           </View>
         </View>
@@ -529,6 +547,7 @@ function InventoryCard({ item, onPress }: InventoryCardProps) {
 interface MovementModalProps {
   visible: boolean;
   item: InventoryItem | null;
+  inventoryItems: InventoryItem[];
   type: TipoMovimiento;
   origin: OrigenMovimiento;
   quantity: string;
@@ -542,14 +561,15 @@ interface MovementModalProps {
   onSetQuantity: (value: string) => void;
   onSetResponsible: (value: string) => void;
   onSetDestination: (value: string) => void;
+  onSelectItem: (item: InventoryItem) => void;
   onOpenScanner: () => void;
-  onSimulateScan: () => void;
   onSubmit: () => void;
 }
 
 function MovementModal({
   visible,
   item,
+  inventoryItems,
   type,
   origin,
   quantity,
@@ -563,10 +583,18 @@ function MovementModal({
   onSetQuantity,
   onSetResponsible,
   onSetDestination,
+  onSelectItem,
   onOpenScanner,
-  onSimulateScan,
   onSubmit,
 }: MovementModalProps) {
+  const [itemSearch, setItemSearch] = useState('');
+  const [showItemPicker, setShowItemPicker] = useState(false);
+  const filteredItems = inventoryItems.filter((candidate) =>
+    `${candidate.nombre} ${candidate.codigo} ${candidate.almacenNombre}`
+      .toLocaleLowerCase()
+      .includes(itemSearch.trim().toLocaleLowerCase()),
+  );
+
   return (
     <Modal
       visible={visible}
@@ -635,7 +663,7 @@ function MovementModal({
 
             <View style={styles.formSection}>
               <Text style={styles.inputLabel}>Insumo</Text>
-              {item ? (
+              {item && (
                 <View style={styles.selectedItemBox}>
                   <MaterialCommunityIcons name={categoryIcon[item.categoria]} size={22} color={colors.primary} />
                   <View style={styles.selectedItemDetails}>
@@ -645,20 +673,86 @@ function MovementModal({
                     </Text>
                     <Text style={styles.selectedItemStock}>Disponible: {item.stockActual} {item.unidad}</Text>
                   </View>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => setShowItemPicker((visible) => !visible)}
+                    style={styles.changeItemButton}
+                  >
+                    <Text style={styles.changeItemLabel}>
+                      {showItemPicker ? 'Cerrar' : 'Cambiar'}
+                    </Text>
+                  </Pressable>
                 </View>
-              ) : (
-                <Text style={styles.selectionHint}>
-                  Selecciona un insumo de la lista, escanea su código o usa la simulación.
-                </Text>
               )}
-              <Pressable
-                accessibilityRole="button"
-                onPress={onSimulateScan}
-                style={styles.simulateButton}
-              >
-                <MaterialCommunityIcons name="lightning-bolt" size={19} color={colors.primary} />
-                <Text style={styles.simulateButtonText}>Simular Escaneo Rápido de Insumo</Text>
-              </Pressable>
+              {(!item || showItemPicker) && (
+                <View style={styles.itemPicker}>
+                  <View style={styles.itemSearchBox}>
+                    <MaterialCommunityIcons
+                      name="magnify"
+                      size={19}
+                      color={colors.textSecondary}
+                    />
+                    <TextInput
+                      accessibilityLabel="Buscar insumo para el movimiento"
+                      value={itemSearch}
+                      onChangeText={setItemSearch}
+                      placeholder="Buscar por nombre o código"
+                      placeholderTextColor={colors.textSecondary}
+                      style={styles.itemSearchInput}
+                    />
+                    {itemSearch.length > 0 && (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Limpiar búsqueda de insumo"
+                        onPress={() => setItemSearch('')}
+                        hitSlop={8}
+                      >
+                        <MaterialCommunityIcons
+                          name="close-circle"
+                          size={18}
+                          color={colors.textSecondary}
+                        />
+                      </Pressable>
+                    )}
+                  </View>
+                  {filteredItems.length > 0 ? (
+                    <ScrollView
+                      nestedScrollEnabled
+                      keyboardShouldPersistTaps="handled"
+                      style={styles.itemPickerList}
+                    >
+                      {filteredItems.map((candidate) => (
+                        <Pressable
+                          accessibilityRole="button"
+                          key={candidate.id}
+                          onPress={() => {
+                            onSelectItem(candidate);
+                            setItemSearch('');
+                            setShowItemPicker(false);
+                          }}
+                          style={styles.itemOption}
+                        >
+                          <View style={styles.itemOptionCopy}>
+                            <Text style={styles.itemOptionName} numberOfLines={1}>
+                              {candidate.nombre}
+                            </Text>
+                            <Text style={styles.itemOptionDetail} numberOfLines={1}>
+                              {candidate.codigo} · {candidate.almacenNombre}
+                            </Text>
+                          </View>
+                          <Text style={styles.itemOptionStock}>
+                            {candidate.stockActual} {candidate.unidad}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  ) : (
+                    <Text style={styles.selectionHint}>
+                      No hay insumos que coincidan con la búsqueda.
+                    </Text>
+                  )}
+                </View>
+              )}
               {!item && (
                 <Pressable
                   accessibilityRole="button"
@@ -923,21 +1017,24 @@ const styles = StyleSheet.create({
     fontSize: typography.body,
   },
   stockCount: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    minWidth: 62,
-    height: 62,
+    gap: 5,
+    minWidth: 92,
+    height: 42,
+    paddingHorizontal: 10,
     borderRadius: 16,
     backgroundColor: colors.primaryLight,
   },
   stockCountNumber: {
     color: colors.primary,
-    fontSize: 19,
+    fontSize: 18,
     fontWeight: '800',
   },
   stockCountLabel: {
     color: colors.primary,
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '700',
   },
   warehouseList: {
@@ -945,10 +1042,10 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   warehouseCard: {
-    width: 136,
-    minHeight: 92,
+    width: 152,
+    minHeight: 100,
     justifyContent: 'center',
-    gap: 4,
+    gap: 5,
     padding: 12,
     borderRadius: 14,
     borderWidth: 1,
@@ -971,7 +1068,12 @@ const styles = StyleSheet.create({
   },
   warehouseLocation: {
     color: colors.textSecondary,
-    fontSize: 11,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  warehouseRegion: {
+    color: colors.textSecondary,
+    fontSize: 10,
   },
   selectedText: { color: colors.onPrimary },
   selectedSubtext: { color: '#D8E9DF' },
@@ -1126,9 +1228,10 @@ const styles = StyleSheet.create({
   },
   itemBottomRow: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'center',
     justifyContent: 'space-between',
     marginTop: 3,
+    gap: spacing.sm,
   },
   stockCaption: {
     color: colors.textSecondary,
@@ -1152,6 +1255,11 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     gap: 3,
   },
+  stockStatusHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
   stockStatusDot: {
     width: 7,
     height: 7,
@@ -1163,6 +1271,7 @@ const styles = StyleSheet.create({
     color: colors.accent,
     fontSize: 11,
     fontWeight: '700',
+    textAlign: 'right',
   },
   minimumText: {
     color: colors.textSecondary,
@@ -1360,21 +1469,69 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
   },
-  simulateButton: {
-    minHeight: 46,
+  itemPicker: {
+    gap: 7,
+  },
+  itemSearchBox: {
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    backgroundColor: colors.surface,
+  },
+  itemSearchInput: {
+    flex: 1,
+    minHeight: 42,
+    color: colors.text,
+    fontSize: 12,
+  },
+  itemPickerList: {
+    maxHeight: 220,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  itemOption: {
+    minHeight: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
     paddingHorizontal: 10,
-    borderWidth: 1,
-    borderColor: colors.primary,
-    borderRadius: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  itemOptionCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  itemOptionName: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  itemOptionDetail: {
+    color: colors.textSecondary,
+    fontSize: 10,
+  },
+  itemOptionStock: {
+    color: colors.primary,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  changeItemButton: {
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 9,
     backgroundColor: colors.primaryLight,
   },
-  simulateButtonText: {
+  changeItemLabel: {
     color: colors.primary,
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: '800',
   },
   formScanButton: {

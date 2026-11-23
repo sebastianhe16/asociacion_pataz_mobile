@@ -1,6 +1,5 @@
 import {
   createContext,
-  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -10,15 +9,12 @@ import {
 import {
   getNetworkSnapshot,
   initializeNetworkService,
-  setNetworkSimulationMode,
   subscribeNetworkStatus,
-  type NetworkSimulationMode,
   type NetworkSnapshot,
 } from './networkService';
 
 interface NetworkContextValue extends NetworkSnapshot {
   serviceError: string | null;
-  setSimulationMode: (mode: NetworkSimulationMode) => Promise<void>;
 }
 
 const NetworkContext = createContext<NetworkContextValue | null>(null);
@@ -39,14 +35,9 @@ export function NetworkProvider({ children }: PropsWithChildren) {
     return unsubscribe;
   }, []);
 
-  const setSimulationMode = useCallback(async (mode: NetworkSimulationMode) => {
-    await setNetworkSimulationMode(mode);
-    setServiceError(null);
-  }, []);
-
   const value = useMemo(
-    () => ({ ...network, serviceError, setSimulationMode }),
-    [network, serviceError, setSimulationMode],
+    () => ({ ...network, serviceError }),
+    [network, serviceError],
   );
 
   return <NetworkContext.Provider value={value}>{children}</NetworkContext.Provider>;

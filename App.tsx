@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Slot } from 'expo-router';
+import { Stack } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { initDatabase } from './src/database/db';
+import { AuthProvider, useAuth } from './src/services/auth/AuthProvider';
 import { NetworkProvider } from './src/services/sync/NetworkProvider';
 import { SyncProvider } from './src/services/sync/SyncProvider';
 import { colors, spacing } from './src/core/theme';
@@ -75,13 +76,32 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <NetworkProvider>
-        <SyncProvider>
-          <StatusBar style="dark" />
-          <Slot />
-        </SyncProvider>
-      </NetworkProvider>
+      <AuthProvider>
+        <NetworkProvider>
+          <SyncProvider>
+            <StatusBar style="dark" />
+            <RootNavigator />
+          </SyncProvider>
+        </NetworkProvider>
+      </AuthProvider>
     </SafeAreaProvider>
+  );
+}
+
+function RootNavigator() {
+  const { user, isLoading } = useAuth();
+
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="index" options={{ animation: 'fade', gestureEnabled: false }} />
+      <Stack.Protected guard={isLoading || !user} redirectTo="/(tabs)">
+        <Stack.Screen name="login" options={{ animation: 'fade' }} />
+      </Stack.Protected>
+      <Stack.Protected guard={isLoading || user !== null} redirectTo="/login">
+        <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
+        <Stack.Screen name="profile" options={{ animation: 'slide_from_right' }} />
+      </Stack.Protected>
+    </Stack>
   );
 }
 

@@ -1,17 +1,17 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   View,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, spacing } from '../core/theme';
-import type { SyncQueueEntry } from '../core/types';
+import type { SyncLog, SyncQueueEntry } from '../core/types';
+import { getRecentSyncLogs } from '../database/db';
 import { useNetworkStatus } from '../services/sync/NetworkProvider';
 import { useSyncStatus } from '../services/sync/SyncProvider';
 
@@ -29,12 +29,7 @@ function formatTimestamp(timestamp: string): string {
 }
 
 export default function SincronizacionScreen() {
-  const {
-    isOnline,
-    simulationMode,
-    serviceError: networkError,
-    setSimulationMode,
-  } = useNetworkStatus();
+  const { isOnline, serviceError: networkError } = useNetworkStatus();
   const {
     pendingCount,
     pendingMovementCount,
@@ -47,29 +42,52 @@ export default function SincronizacionScreen() {
     refreshPendingCount,
     synchronize,
   } = useSyncStatus();
-  const [networkActionError, setNetworkActionError] = useState<string | null>(null);
+  const [recentLogs, setRecentLogs] = useState<SyncLog[]>([]);
+  const [isLogLoading, setIsLogLoading] = useState(true);
+  const [logError, setLogError] = useState<string | null>(null);
 
-  const handleConnectionToggle = async (enabled: boolean) => {
-    setNetworkActionError(null);
+  const refreshLogs = useCallback(async () => {
     try {
-      await setSimulationMode(enabled ? 'ONLINE' : 'OFFLINE');
+      setRecentLogs(await getRecentSyncLogs());
+      setLogError(null);
     } catch (error) {
-      setNetworkActionError(
-        error instanceof Error ? error.message : 'No se pudo guardar el modo de red simulado.',
+      setLogError(
+        error instanceof Error ? error.message : 'No se pudo cargar el historial de sincronización.',
       );
+    } finally {
+      setIsLogLoading(false);
     }
-  };
+  }, []);
 
-  const resetNetworkSimulation = async () => {
-    setNetworkActionError(null);
-    try {
-      await setSimulationMode(null);
-    } catch (error) {
-      setNetworkActionError(
-        error instanceof Error ? error.message : 'No se pudo restablecer el estado de red.',
-      );
-    }
-  };
+  useEffect(() => {
+    let active = true;
+
+    getRecentSyncLogs()
+      .then((logs) => {
+        if (active) {
+          setRecentLogs(logs);
+          setLogError(null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setLogError(
+            error instanceof Error
+              ? error.message
+              : 'No se pudo cargar el historial de sincronización.',
+          );
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setIsLogLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [pendingCount, refreshLogs]);
 
   const successVisible =
     lastResult !== null && lastResult.syncedCount > 0 && pendingCount === 0;
@@ -82,7 +100,7 @@ export default function SincronizacionScreen() {
       >
         <View style={styles.header}>
           <View style={styles.headerCopy}>
-            <Text style={styles.eyebrow}>INTEGRACIÓN ERP · P1</Text>
+            <Text style={styles.eyebrow}>INTEGRACIÓN ERP</Text>
             <Text style={styles.title}>Sincronización SISGEAP</Text>
             <Text style={styles.subtitle}>
               Cola local, envío por lotes y trazabilidad auditable.
@@ -111,37 +129,7 @@ export default function SincronizacionScreen() {
             </View>
           </View>
 
-          <View style={styles.simulationRow}>
-            <View style={styles.simulationCopy}>
-              <Text style={styles.simulationTitle}>Simular conexión / desconexión</Text>
-              <Text style={styles.simulationHint}>
-                {simulationMode
-                  ? `Modo ${simulationMode === 'ONLINE' ? 'conectado' : 'desconectado'} activo para la demo`
-                  : 'Control manual para pruebas de sustentación'}
-              </Text>
-            </View>
-            <Switch
-              accessibilityLabel="Simular conexión o desconexión"
-              value={isOnline}
-              onValueChange={(value) => void handleConnectionToggle(value)}
-              trackColor={{ false: '#E8C99F', true: '#A8D4B0' }}
-              thumbColor={isOnline ? colors.online : colors.offline}
-            />
-          </View>
-
-          {simulationMode && (
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => void resetNetworkSimulation()}
-              style={styles.resetSimulation}
-            >
-              <MaterialCommunityIcons name="restore" size={15} color={colors.textSecondary} />
-              <Text style={styles.resetSimulationText}>Usar estado real de red</Text>
-            </Pressable>
-          )}
-          {(networkError || networkActionError) && (
-            <Text style={styles.inlineError}>{networkActionError ?? networkError}</Text>
-          )}
+          {networkError && <Text style={styles.inlineError}>{networkError}</Text>}
         </View>
 
         <View style={styles.totalCard}>
@@ -212,7 +200,7 @@ export default function SincronizacionScreen() {
           </Pressable>
           {!isOnline && (
             <Text style={styles.syncHint}>
-              Activa el interruptor de simulación para probar el envío sin conexión real.
+              Conéctate a internet para enviar los registros pendientes.
             </Text>
           )}
           {pendingCount === 0 && !isSyncing && (
@@ -224,13 +212,17 @@ export default function SincronizacionScreen() {
           <View style={styles.queueHeadingCopy}>
             <Text style={styles.queueTitle}>Cola de transacciones</Text>
             <Text style={styles.queueSubtitle}>
-              Orden cronológico · envío simulado al API Gateway
+              Orden cronológico · paquetes locales
             </Text>
           </View>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Actualizar cola"
-            onPress={() => void refreshPendingCount()}
+            onPress={() => {
+              void refreshPendingCount();
+              setIsLogLoading(true);
+              void refreshLogs();
+            }}
             style={styles.refreshButton}
           >
             <MaterialCommunityIcons name="refresh" size={19} color={colors.primary} />
@@ -260,6 +252,47 @@ export default function SincronizacionScreen() {
           </View>
         )}
 
+        <View style={styles.queueHeader}>
+          <View style={styles.queueHeadingCopy}>
+            <Text style={styles.queueTitle}>Últimos registros sincronizados</Text>
+            <Text style={styles.queueSubtitle}>Resultado y hora de cada envío</Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Actualizar historial de sincronización"
+            onPress={() => {
+              setIsLogLoading(true);
+              void refreshLogs();
+            }}
+            style={styles.refreshButton}
+          >
+            <MaterialCommunityIcons name="refresh" size={19} color={colors.primary} />
+          </Pressable>
+        </View>
+        {isLogLoading && recentLogs.length === 0 ? (
+          <View style={styles.loading}>
+            <ActivityIndicator color={colors.primary} />
+            <Text style={styles.loadingText}>Cargando historial…</Text>
+          </View>
+        ) : recentLogs.length === 0 ? (
+          <View style={styles.emptyState}>
+            <View style={styles.emptyIcon}>
+              <MaterialCommunityIcons name="history" size={25} color={colors.textSecondary} />
+            </View>
+            <Text style={styles.emptyTitle}>Sin registros de sincronización</Text>
+            <Text style={styles.emptyText}>
+              El historial aparecerá cuando se procesen registros pendientes.
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.queueList}>
+            {recentLogs.map((log) => (
+              <SyncLogCard key={log.id} log={log} />
+            ))}
+          </View>
+        )}
+        {logError && <Text style={styles.inlineError}>{logError}</Text>}
+
         {lastResult && (
           <View style={styles.lastSync}>
             <MaterialCommunityIcons name="history" size={16} color={colors.textSecondary} />
@@ -270,6 +303,46 @@ export default function SincronizacionScreen() {
         )}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function SyncLogCard({ log }: { log: SyncLog }) {
+  const isSuccessful = log.syncStatus === 'SUCCESS';
+  return (
+    <View style={styles.queueCard}>
+      <View
+        style={[
+          styles.queueCardIcon,
+          isSuccessful ? styles.logSuccessIcon : styles.logErrorIcon,
+        ]}
+      >
+        <MaterialCommunityIcons
+          name={log.entityType === 'MOVIMIENTO_ALMACEN' ? 'swap-vertical' : 'clipboard-text-outline'}
+          size={19}
+          color={isSuccessful ? colors.online : colors.error}
+        />
+      </View>
+      <View style={styles.queueCardBody}>
+        <View style={styles.queueCardTop}>
+          <Text style={styles.queueType}>
+            {log.entityType === 'MOVIMIENTO_ALMACEN' ? 'MOVIMIENTO DE ALMACÉN' : 'FICHA DE CAMPO'}
+          </Text>
+          <View style={[styles.statusPill, isSuccessful ? styles.syncedPill : styles.errorPill]}>
+            <Text style={[styles.statusLabel, isSuccessful ? styles.syncedStatus : styles.errorStatus]}>
+              {isSuccessful ? 'SINCRONIZADO' : 'ERROR'}
+            </Text>
+          </View>
+        </View>
+        <Text style={styles.queueEntryTitle}>
+          {isSuccessful ? 'Envío completado' : 'Envío con error'}
+        </Text>
+        <Text style={styles.queueEntryDetail}>Registro {log.entityId.slice(0, 8)}</Text>
+        <View style={styles.timestampRow}>
+          <MaterialCommunityIcons name="clock-outline" size={14} color={colors.textSecondary} />
+          <Text style={styles.timestampText}>{formatTimestamp(log.timestamp)}</Text>
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -422,40 +495,6 @@ const styles = StyleSheet.create({
   },
   onlineIcon: { backgroundColor: colors.accentLight },
   offlineIcon: { backgroundColor: colors.warningBackground },
-  simulationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    marginTop: 12,
-    paddingTop: 11,
-  },
-  simulationCopy: { flex: 1, gap: 3 },
-  simulationTitle: {
-    color: colors.text,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  simulationHint: {
-    color: colors.textSecondary,
-    fontSize: 10,
-    lineHeight: 15,
-  },
-  resetSimulation: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingTop: 8,
-  },
-  resetSimulationText: {
-    color: colors.textSecondary,
-    fontSize: 10,
-    fontWeight: '700',
-    textDecorationLine: 'underline',
-  },
   inlineError: {
     color: colors.error,
     fontSize: 10,
@@ -663,12 +702,16 @@ const styles = StyleSheet.create({
   },
   pendingPill: { backgroundColor: colors.warningBackground },
   errorPill: { backgroundColor: colors.dangerBackground },
+  syncedPill: { backgroundColor: colors.accentLight },
   statusLabel: {
     fontSize: 8,
     fontWeight: '800',
   },
   pendingStatus: { color: colors.offline },
   errorStatus: { color: colors.error },
+  syncedStatus: { color: colors.online },
+  logSuccessIcon: { backgroundColor: colors.accentLight },
+  logErrorIcon: { backgroundColor: colors.dangerBackground },
   queueEntryTitle: {
     color: colors.text,
     fontSize: 12,

@@ -2,7 +2,7 @@ import { Tabs } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { View } from 'react-native';
 import { colors } from '../core/theme';
-import { InstitutionalHeader } from '../components/InstitutionalHeader';
+import { Header } from '../components/Header';
 import { useSyncStatus } from '../services/sync/SyncProvider';
 
 export default function AppNavigator() {
@@ -10,7 +10,7 @@ export default function AppNavigator() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
-      <InstitutionalHeader />
+      <Header />
       <Tabs
         screenOptions={{
           headerShown: false,

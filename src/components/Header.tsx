@@ -1,9 +1,13 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, spacing } from '../core/theme';
+import { useAuth } from '../services/auth/AuthProvider';
 
-export function InstitutionalHeader() {
+export function Header() {
+  const { user } = useAuth();
+
   return (
     <SafeAreaView edges={['top']} style={styles.safeArea}>
       <View style={styles.content}>
@@ -13,17 +17,22 @@ export function InstitutionalHeader() {
           </View>
           <View style={styles.titleGroup}>
             <Text style={styles.title}>Asociación Pataz</Text>
-            <Text style={styles.subtitle}>Gestión Logística y Campo · P1</Text>
+            <Text style={styles.subtitle}>Gestión Logística y Campo</Text>
           </View>
         </View>
-        <View
-          accessible
-          accessibilityLabel="Perfil institucional, estado activo"
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel={`Abrir perfil de ${user?.nombreCompleto ?? 'usuario'}`}
+          activeOpacity={0.75}
+          onPress={() => router.push('/profile')}
           style={styles.profile}
         >
-          <MaterialCommunityIcons name="account-outline" size={23} color={colors.primary} />
-          <View style={styles.secureIndicator} />
-        </View>
+          {user ? (
+            <Text style={styles.initials}>{user.iniciales}</Text>
+          ) : (
+            <MaterialCommunityIcons name="account-outline" size={23} color={colors.primary} />
+          )}
+        </TouchableOpacity>
       </View>
     </SafeAreaView>
   );
@@ -85,15 +94,9 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: '#F7F9F8',
   },
-  secureIndicator: {
-    position: 'absolute',
-    right: 2,
-    bottom: 2,
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    borderWidth: 2,
-    borderColor: colors.surface,
-    backgroundColor: colors.online,
+  initials: {
+    color: colors.primary,
+    fontSize: 13,
+    fontWeight: '800',
   },
 });

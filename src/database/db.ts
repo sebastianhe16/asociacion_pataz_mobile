@@ -7,7 +7,10 @@ import type {
   OrigenMovimiento,
   ProyectoCampoResumen,
   SyncDashboardData,
+  SyncEntityType,
+  SyncLog,
   SyncQueueEntry,
+  SyncStatus,
   TipoMovimiento,
 } from '../core/types';
 import { DATABASE_SCHEMA } from './schema';
@@ -17,6 +20,20 @@ let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 export interface InventoryItem extends Insumo {
   almacenNombre: string;
+}
+
+export interface WarehouseStatusSummary extends Almacen {
+  itemCount: number;
+  lowStockCount: number;
+}
+
+export interface RecentActivity {
+  id: string;
+  entityType: SyncEntityType;
+  title: string;
+  detail: string;
+  timestamp: string;
+  syncStatus: SyncStatus;
 }
 
 export interface RegisterWarehouseMovementInput {
@@ -335,12 +352,81 @@ export async function getWarehouses(): Promise<Almacen[]> {
   );
 }
 
-export async function getInventoryByWarehouse(
-  warehouseId: string,
-): Promise<InventoryItem[]> {
+export async function getWarehouseStatusSummaries(): Promise<WarehouseStatusSummary[]> {
   const database = await getDatabase();
-  return database.getAllAsync<InventoryItem>(
+  return database.getAllAsync<WarehouseStatusSummary>(
     `SELECT
+      a.id,
+      a.nombre,
+      a.ubicacion,
+      COUNT(i.id) AS itemCount,
+      SUM(CASE
+        WHEN i.id IS NOT NULL AND i.stock_actual <= i.stock_minimo THEN 1
+        ELSE 0
+      END) AS lowStockCount
+    FROM almacenes a
+    LEFT JOIN insumos i ON i.almacen_id = a.id
+    GROUP BY a.id, a.nombre, a.ubicacion
+    ORDER BY a.nombre COLLATE NOCASE ASC`,
+  );
+}
+
+export async function getRecentActivities(limit = 6): Promise<RecentActivity[]> {
+  const database = await getDatabase();
+  return database.getAllAsync<RecentActivity>(
+    `SELECT *
+     FROM (
+       SELECT
+         m.id,
+         'MOVIMIENTO_ALMACEN' AS entityType,
+         CASE
+           WHEN m.tipo = 'ENTRADA' THEN 'Entrada registrada'
+           ELSE 'Salida registrada'
+         END AS title,
+         i.nombre || ' · ' || a.nombre AS detail,
+         m.timestamp,
+         m.sync_status AS syncStatus
+       FROM movimientos_almacen m
+       INNER JOIN insumos i ON i.id = m.insumo_id
+       INNER JOIN almacenes a ON a.id = i.almacen_id
+       UNION ALL
+       SELECT
+         f.id,
+         'FICHA_CAMPO' AS entityType,
+         'Ficha de campo registrada' AS title,
+         f.beneficiario_nombre || ' · ' || p.nombre AS detail,
+         f.timestamp,
+         f.sync_status AS syncStatus
+       FROM fichas_campo f
+       INNER JOIN proyectos p ON p.id = f.proyecto_id
+     )
+     ORDER BY timestamp DESC
+     LIMIT ?`,
+    limit,
+  );
+}
+
+export async function getRecentSyncLogs(limit = 8): Promise<SyncLog[]> {
+  const database = await getDatabase();
+  return database.getAllAsync<SyncLog>(
+    `SELECT
+      id,
+      entity_type AS entityType,
+      entity_id AS entityId,
+      sync_status AS syncStatus,
+      message,
+      timestamp,
+      endpoint
+    FROM sync_logs
+    ORDER BY timestamp DESC
+    LIMIT ?`,
+    limit,
+  );
+}
+
+async function getInventoryItems(warehouseId?: string): Promise<InventoryItem[]> {
+  const database = await getDatabase();
+  const query = `SELECT
       i.id,
       i.codigo,
       i.nombre,
@@ -352,10 +438,22 @@ export async function getInventoryByWarehouse(
       a.nombre AS almacenNombre
     FROM insumos i
     INNER JOIN almacenes a ON a.id = i.almacen_id
-    WHERE i.almacen_id = ?
-    ORDER BY i.nombre COLLATE NOCASE ASC`,
-    warehouseId,
-  );
+    ${warehouseId ? 'WHERE i.almacen_id = ?' : ''}
+    ORDER BY i.nombre COLLATE NOCASE ASC`;
+
+  return warehouseId
+    ? database.getAllAsync<InventoryItem>(query, warehouseId)
+    : database.getAllAsync<InventoryItem>(query);
+}
+
+export async function getInventoryByWarehouse(
+  warehouseId: string,
+): Promise<InventoryItem[]> {
+  return getInventoryItems(warehouseId);
+}
+
+export async function getAllInventoryItems(): Promise<InventoryItem[]> {
+  return getInventoryItems();
 }
 
 export async function findInventoryItemByCode(code: string): Promise<InventoryItem | null> {

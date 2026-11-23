@@ -28,7 +28,7 @@ interface NuevaFichaCampoScreenProps {
 interface CapturedCoordinates {
   latitude: number;
   longitude: number;
-  source: 'GPS' | 'SIMULADA';
+  source: 'GPS';
 }
 
 const ACTIVITIES_BY_AXIS: Record<EjeProyecto, string[]> = {
@@ -69,17 +69,6 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'No se pudo guardar la ficha en la base local.';
 }
 
-function getSimulatedCoordinates(caserio: string): CapturedCoordinates {
-  const hash = [...caserio].reduce((total, character) => total + character.charCodeAt(0), 0);
-  const offset = (hash % 80) / 10_000;
-
-  return {
-    latitude: Number((-7.78 - offset).toFixed(6)),
-    longitude: Number((-77.58 - offset).toFixed(6)),
-    source: 'SIMULADA',
-  };
-}
-
 export default function NuevaFichaCampoScreen({
   visible,
   project,
@@ -107,7 +96,7 @@ export default function NuevaFichaCampoScreen({
     try {
       const permission = await Location.requestForegroundPermissionsAsync();
       if (permission.status !== 'granted') {
-        throw new Error('Permiso de ubicación denegado. Puedes usar la coordenada simulada.');
+        throw new Error('Permiso de ubicación denegado. Puedes guardar la ficha sin coordenadas.');
       }
 
       const currentLocation = await Location.getCurrentPositionAsync({});
@@ -121,11 +110,6 @@ export default function NuevaFichaCampoScreen({
     } finally {
       setIsCapturingLocation(false);
     }
-  };
-
-  const simulateCoordinates = () => {
-    setCoordinates(getSimulatedCoordinates(project.caserio));
-    setLocationError(null);
   };
 
   const toggleQuickNote = (note: string) => {
@@ -338,10 +322,8 @@ export default function NuevaFichaCampoScreen({
                   <Text style={styles.sectionTitle}>Ubicación de la visita</Text>
                 </View>
                 {coordinates && (
-                  <View style={[styles.locationBadge, coordinates.source === 'SIMULADA' && styles.simulatedBadge]}>
-                    <Text style={[styles.locationBadgeText, coordinates.source === 'SIMULADA' && styles.simulatedBadgeText]}>
-                      {coordinates.source}
-                    </Text>
+                  <View style={styles.locationBadge}>
+                    <Text style={styles.locationBadgeText}>{coordinates.source}</Text>
                   </View>
                 )}
               </View>
@@ -361,24 +343,10 @@ export default function NuevaFichaCampoScreen({
                     </>
                   )}
                 </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={simulateCoordinates}
-                  style={[styles.locationButton, styles.locationButtonSecondary]}
-                >
-                  <MaterialCommunityIcons name="map-marker-question-outline" size={19} color={colors.primary} />
-                  <Text style={styles.locationButtonSecondaryText}>
-                    Simular Coordenadas de Caserío Altoandino
-                  </Text>
-                </Pressable>
               </View>
               {coordinates ? (
                 <View style={styles.coordinateReadout}>
-                  <MaterialCommunityIcons
-                    name={coordinates.source === 'GPS' ? 'crosshairs-gps' : 'map-marker-outline'}
-                    size={17}
-                    color={coordinates.source === 'GPS' ? colors.online : colors.offline}
-                  />
+                  <MaterialCommunityIcons name="crosshairs-gps" size={17} color={colors.online} />
                   <Text style={styles.coordinateText}>
                     {coordinates.latitude.toFixed(6)}, {coordinates.longitude.toFixed(6)}
                   </Text>
@@ -386,7 +354,7 @@ export default function NuevaFichaCampoScreen({
                 </View>
               ) : (
                 <Text style={styles.sectionHint}>
-                  Coordenadas opcionales. Puedes capturar GPS o usar una ubicación simulada para la demo.
+                  Las coordenadas son opcionales. Si no hay señal GPS, puedes continuar sin ubicación.
                 </Text>
               )}
               {locationError && (
@@ -664,8 +632,6 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '800',
   },
-  simulatedBadge: { backgroundColor: colors.warningBackground },
-  simulatedBadgeText: { color: colors.offline },
   locationActions: { gap: 7 },
   locationButton: {
     minHeight: 46,
@@ -681,17 +647,6 @@ const styles = StyleSheet.create({
     color: colors.onPrimary,
     fontSize: 12,
     fontWeight: '800',
-  },
-  locationButtonSecondary: {
-    backgroundColor: colors.primaryLight,
-    borderWidth: 1,
-    borderColor: '#C8DCCF',
-  },
-  locationButtonSecondaryText: {
-    color: colors.primary,
-    fontSize: 11,
-    fontWeight: '700',
-    textAlign: 'center',
   },
   coordinateReadout: {
     flexDirection: 'row',

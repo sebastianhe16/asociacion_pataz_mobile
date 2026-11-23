@@ -94,7 +94,7 @@ async function saveSuccessfulSync(
 
 export async function syncPendingRecords(isOnline: boolean): Promise<SyncResult> {
   if (!isOnline) {
-    throw new Error('La sincronización requiere conexión o el modo online simulado.');
+    throw new Error('La sincronización requiere conexión a internet.');
   }
 
   const database = await getDatabase();
