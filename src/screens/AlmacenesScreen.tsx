@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -16,6 +17,8 @@ import {
   useCameraPermissions,
   type BarcodeScanningResult,
 } from 'expo-camera';
+import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type {
@@ -23,6 +26,7 @@ import type {
   CategoriaInsumo,
   OrigenMovimiento,
   TipoMovimiento,
+  WarehouseMovementRecord,
 } from '../core/types';
 import { colors, spacing, typography } from '../core/theme';
 import {
@@ -33,6 +37,10 @@ import {
   registerWarehouseMovement,
   type InventoryItem,
 } from '../database/db';
+import SignaturePad from '../components/SignaturePad';
+import ActaEntregaModal from './ActaEntregaModal';
+import OrdenesCompraView from './OrdenesCompraView';
+import { persistEvidencePhoto } from '../services/warehouse/evidencePhotoService';
 import { useSyncStatus } from '../services/sync/SyncProvider';
 
 type CategoryFilter = 'Todas' | CategoriaInsumo;
@@ -46,7 +54,7 @@ const categoryIcon: Record<CategoriaInsumo, keyof typeof MaterialCommunityIcons.
 };
 
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'Ocurrió un error al consultar el inventario.';
+  return error instanceof Error ? error.message : 'Ocurrió un error inesperado.';
 }
 
 export default function AlmacenesScreen() {
@@ -66,12 +74,25 @@ export default function AlmacenesScreen() {
   const [quantity, setQuantity] = useState('1');
   const [responsible, setResponsible] = useState('');
   const [destination, setDestination] = useState('');
+  const [recipientName, setRecipientName] = useState('');
+  const [recipientDni, setRecipientDni] = useState('');
+  const [recipientRole, setRecipientRole] = useState('');
+  const [coordinates, setCoordinates] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [evidencePhotoUri, setEvidencePhotoUri] = useState<string | null>(null);
+  const [signatureSvgPaths, setSignatureSvgPaths] = useState<string | null>(null);
+  const [signatureRevision, setSignatureRevision] = useState(0);
+  const [passportNotice, setPassportNotice] = useState<string | null>(null);
+  const [isCapturingLocation, setIsCapturingLocation] = useState(false);
+  const [isHandlingPhoto, setIsHandlingPhoto] = useState(false);
+  const [actaVisible, setActaVisible] = useState(false);
+  const [actaMovement, setActaMovement] = useState<WarehouseMovementRecord | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [activeView, setActiveView] = useState<'INVENTARIO' | 'ORDENES'>('INVENTARIO');
   const [permission, requestPermission] = useCameraPermissions();
   const scanHandled = useRef(false);
-  const { refreshPendingCount } = useSyncStatus();
+  const { pendingApprovalOrderCount, refreshPendingCount } = useSyncStatus();
 
   const selectedWarehouse = warehouses.find(({ id }) => id === selectedWarehouseId);
   const isLoading = loadedWarehouseId !== selectedWarehouseId;
@@ -176,8 +197,89 @@ export default function AlmacenesScreen() {
     setQuantity('1');
     setResponsible('');
     setDestination('');
+    setRecipientName('');
+    setRecipientDni('');
+    setRecipientRole('');
+    setCoordinates(null);
+    setEvidencePhotoUri(null);
+    setSignatureSvgPaths(null);
+    setSignatureRevision((revision) => revision + 1);
+    setPassportNotice(null);
+    setActaMovement(null);
     setFormError(null);
     setMovementOpen(true);
+  }, []);
+
+  const captureDeliveryLocation = useCallback(async () => {
+    setIsCapturingLocation(true);
+    setPassportNotice(null);
+    try {
+      const permissionResult = await Location.requestForegroundPermissionsAsync();
+      if (!permissionResult.granted) {
+        setCoordinates(null);
+        setPassportNotice('No se autorizó la ubicación. Puedes registrar la entrega sin coordenadas.');
+        return;
+      }
+
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      setCoordinates({
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      });
+      setPassportNotice('Ubicación de entrega registrada.');
+    } catch (error) {
+      setCoordinates(null);
+      setPassportNotice(
+        `${getErrorMessage(error)} Puedes continuar sin coordenadas GPS.`,
+      );
+    } finally {
+      setIsCapturingLocation(false);
+    }
+  }, []);
+
+  const chooseEvidencePhoto = useCallback(async (source: 'camera' | 'library') => {
+    setIsHandlingPhoto(true);
+    setPassportNotice(null);
+    try {
+      if (source === 'camera') {
+        const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permissionResult.granted) {
+          setPassportNotice('Se requiere permiso de cámara para tomar la fotografía.');
+          return;
+        }
+      } else {
+        const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!permissionResult.granted) {
+          setPassportNotice('Se requiere permiso de galería para adjuntar la fotografía.');
+          return;
+        }
+      }
+
+      const result = source === 'camera'
+        ? await ImagePicker.launchCameraAsync({
+          mediaTypes: ['images'],
+          quality: 0.65,
+        })
+        : await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          quality: 0.65,
+        });
+
+      if (result.canceled) {
+        return;
+      }
+
+      const asset = result.assets[0];
+      const persistentUri = await persistEvidencePhoto(asset.uri, asset.fileName);
+      setEvidencePhotoUri(persistentUri);
+      setPassportNotice('Fotografía guardada en el dispositivo.');
+    } catch (error) {
+      setPassportNotice(getErrorMessage(error));
+    } finally {
+      setIsHandlingPhoto(false);
+    }
   }, []);
 
   const handleBarcodeScanned = useCallback(async ({ data }: BarcodeScanningResult) => {
@@ -220,13 +322,24 @@ export default function AlmacenesScreen() {
     setIsSaving(true);
     setFormError(null);
     try {
-      await registerWarehouseMovement({
+      const movement = await registerWarehouseMovement({
         tipo: movementType,
         origen: movementType === 'ENTRADA' ? entryOrigin : null,
         insumoId: selectedItem.id,
         cantidad: parsedQuantity,
         responsable: responsible,
         destinoCaserio: destination,
+        evidencia: movementType === 'SALIDA'
+          ? {
+            receptorNombre: recipientName,
+            receptorDni: recipientDni,
+            receptorCargo: recipientRole,
+            latitud: coordinates?.latitude ?? null,
+            longitud: coordinates?.longitude ?? null,
+            fotoUri: evidencePhotoUri,
+            firmaSvgPaths: signatureSvgPaths,
+          }
+          : undefined,
       });
       await loadInventory(selectedItem.almacenId);
       try {
@@ -236,9 +349,14 @@ export default function AlmacenesScreen() {
       }
       await refreshPendingCount();
       setMovementOpen(false);
-      setToastMessage(
-        `${movementType === 'ENTRADA' ? 'Entrada' : 'Salida'} registrada · ${parsedQuantity} ${selectedItem.unidad}`,
-      );
+      if (movementType === 'SALIDA') {
+        setActaMovement(movement);
+        setToastMessage(
+          `Salida registrada · ${parsedQuantity} ${selectedItem.unidad}. Pasaporte fiduciario disponible.`,
+        );
+      } else {
+        setToastMessage(`Entrada registrada · ${parsedQuantity} ${selectedItem.unidad}`);
+      }
     } catch (error) {
       setFormError(getErrorMessage(error));
     } finally {
@@ -246,12 +364,18 @@ export default function AlmacenesScreen() {
     }
   }, [
     destination,
+    evidencePhotoUri,
     entryOrigin,
+    coordinates,
     loadInventory,
     movementType,
     quantity,
+    recipientDni,
+    recipientName,
+    recipientRole,
     responsible,
     refreshPendingCount,
+    signatureSvgPaths,
     selectedItem,
   ]);
 
@@ -262,6 +386,49 @@ export default function AlmacenesScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
+        <View style={styles.segmentedControl}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: activeView === 'INVENTARIO' }}
+            onPress={() => setActiveView('INVENTARIO')}
+            style={[styles.segmentTab, activeView === 'INVENTARIO' && styles.segmentTabSelected]}
+          >
+            <MaterialCommunityIcons
+              name="warehouse"
+              size={17}
+              color={activeView === 'INVENTARIO' ? colors.onPrimary : colors.textSecondary}
+            />
+            <Text style={[styles.segmentText, activeView === 'INVENTARIO' && styles.segmentTextSelected]}>
+              Inventario
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: activeView === 'ORDENES' }}
+            onPress={() => setActiveView('ORDENES')}
+            style={[styles.segmentTab, activeView === 'ORDENES' && styles.segmentTabSelected]}
+          >
+            <MaterialCommunityIcons
+              name="file-document-multiple-outline"
+              size={17}
+              color={activeView === 'ORDENES' ? colors.onPrimary : colors.textSecondary}
+            />
+            <Text style={[styles.segmentText, activeView === 'ORDENES' && styles.segmentTextSelected]}>
+              Órdenes de Compra
+            </Text>
+            {pendingApprovalOrderCount > 0 && (
+              <View style={[styles.segmentBadge, activeView === 'ORDENES' && styles.segmentBadgeSelected]}>
+                <Text style={[styles.segmentBadgeText, activeView === 'ORDENES' && styles.segmentBadgeTextSelected]}>
+                  {pendingApprovalOrderCount}
+                </Text>
+              </View>
+            )}
+          </Pressable>
+        </View>
+        {activeView === 'ORDENES' ? (
+          <OrdenesCompraView />
+        ) : (
+          <>
         <View style={styles.headingRow}>
           <View style={styles.headingCopy}>
             <Text style={styles.eyebrow}>CONTROL LOGÍSTICO</Text>
@@ -414,12 +581,23 @@ export default function AlmacenesScreen() {
             Cambios guardados primero en este dispositivo. La sincronización queda pendiente.
           </Text>
         </View>
+          </>
+        )}
       </ScrollView>
 
       {toastMessage && (
         <View accessibilityLiveRegion="polite" style={styles.toast}>
           <MaterialCommunityIcons name="check-circle" size={20} color={colors.onPrimary} />
           <Text style={styles.toastText}>{toastMessage}</Text>
+          {actaMovement?.hashSha256 && !actaVisible && (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setActaVisible(true)}
+              hitSlop={8}
+            >
+              <Text style={styles.toastActionText}>Ver acta</Text>
+            </Pressable>
+          )}
           <Pressable onPress={() => setToastMessage(null)} hitSlop={8}>
             <MaterialCommunityIcons name="close" size={19} color={colors.onPrimary} />
           </Pressable>
@@ -443,12 +621,35 @@ export default function AlmacenesScreen() {
         onSetQuantity={setQuantity}
         onSetResponsible={setResponsible}
         onSetDestination={setDestination}
+        recipientName={recipientName}
+        recipientDni={recipientDni}
+        recipientRole={recipientRole}
+        coordinates={coordinates}
+        evidencePhotoUri={evidencePhotoUri}
+        signatureSvgPaths={signatureSvgPaths}
+        signatureRevision={signatureRevision}
+        passportNotice={passportNotice}
+        isCapturingLocation={isCapturingLocation}
+        isHandlingPhoto={isHandlingPhoto}
+        onSetRecipientName={setRecipientName}
+        onSetRecipientDni={(value) => setRecipientDni(value.replace(/\D/g, '').slice(0, 8))}
+        onSetRecipientRole={setRecipientRole}
+        onCaptureLocation={captureDeliveryLocation}
+        onTakePhoto={() => chooseEvidencePhoto('camera')}
+        onChoosePhoto={() => chooseEvidencePhoto('library')}
+        onSetSignature={setSignatureSvgPaths}
         onSelectItem={(item) => {
           setSelectedItem(item);
           setSelectedWarehouseId(item.almacenId);
         }}
         onOpenScanner={startScanner}
         onSubmit={handleRegisterMovement}
+      />
+
+      <ActaEntregaModal
+        visible={actaVisible}
+        movement={actaMovement}
+        onClose={() => setActaVisible(false)}
       />
 
       <ScannerModal
@@ -553,6 +754,16 @@ interface MovementModalProps {
   quantity: string;
   responsible: string;
   destination: string;
+  recipientName: string;
+  recipientDni: string;
+  recipientRole: string;
+  coordinates: { latitude: number; longitude: number } | null;
+  evidencePhotoUri: string | null;
+  signatureSvgPaths: string | null;
+  signatureRevision: number;
+  passportNotice: string | null;
+  isCapturingLocation: boolean;
+  isHandlingPhoto: boolean;
   error: string | null;
   isSaving: boolean;
   onClose: () => void;
@@ -561,6 +772,13 @@ interface MovementModalProps {
   onSetQuantity: (value: string) => void;
   onSetResponsible: (value: string) => void;
   onSetDestination: (value: string) => void;
+  onSetRecipientName: (value: string) => void;
+  onSetRecipientDni: (value: string) => void;
+  onSetRecipientRole: (value: string) => void;
+  onCaptureLocation: () => void;
+  onTakePhoto: () => void;
+  onChoosePhoto: () => void;
+  onSetSignature: (value: string | null) => void;
   onSelectItem: (item: InventoryItem) => void;
   onOpenScanner: () => void;
   onSubmit: () => void;
@@ -575,6 +793,16 @@ function MovementModal({
   quantity,
   responsible,
   destination,
+  recipientName,
+  recipientDni,
+  recipientRole,
+  coordinates,
+  evidencePhotoUri,
+  signatureSvgPaths,
+  signatureRevision,
+  passportNotice,
+  isCapturingLocation,
+  isHandlingPhoto,
   error,
   isSaving,
   onClose,
@@ -583,6 +811,13 @@ function MovementModal({
   onSetQuantity,
   onSetResponsible,
   onSetDestination,
+  onSetRecipientName,
+  onSetRecipientDni,
+  onSetRecipientRole,
+  onCaptureLocation,
+  onTakePhoto,
+  onChoosePhoto,
+  onSetSignature,
   onSelectItem,
   onOpenScanner,
   onSubmit,
@@ -809,6 +1044,144 @@ function MovementModal({
               />
             </View>
 
+            {type === 'SALIDA' && (
+              <View style={styles.passportSection}>
+                <View style={styles.passportHeading}>
+                  <View style={styles.passportIcon}>
+                    <MaterialCommunityIcons
+                      name="file-certificate-outline"
+                      size={20}
+                      color={colors.primary}
+                    />
+                  </View>
+                  <View style={styles.passportHeadingCopy}>
+                    <Text style={styles.passportTitle}>Evidencia de Entrega Comunitaria</Text>
+                    <Text style={styles.passportSubtitle}>Pasaporte fiduciario</Text>
+                  </View>
+                </View>
+
+                <View style={styles.formSection}>
+                  <Text style={styles.inputLabel}>Nombre completo del receptor *</Text>
+                  <TextInput
+                    accessibilityLabel="Nombre completo del receptor"
+                    value={recipientName}
+                    onChangeText={onSetRecipientName}
+                    placeholder="Nombre y apellidos"
+                    placeholderTextColor={colors.textSecondary}
+                    style={styles.textInput}
+                    autoCapitalize="words"
+                  />
+                </View>
+
+                <View style={styles.passportInputRow}>
+                  <View style={styles.passportHalfInput}>
+                    <Text style={styles.inputLabel}>DNI (8 dígitos) *</Text>
+                    <TextInput
+                      accessibilityLabel="DNI del receptor"
+                      value={recipientDni}
+                      onChangeText={onSetRecipientDni}
+                      placeholder="00000000"
+                      placeholderTextColor={colors.textSecondary}
+                      style={styles.textInput}
+                      keyboardType="number-pad"
+                      maxLength={8}
+                    />
+                  </View>
+                  <View style={styles.passportHalfInput}>
+                    <Text style={styles.inputLabel}>Cargo / organización *</Text>
+                    <TextInput
+                      accessibilityLabel="Cargo u organización del receptor"
+                      value={recipientRole}
+                      onChangeText={onSetRecipientRole}
+                      placeholder="CODECO, JASS, beneficiario…"
+                      placeholderTextColor={colors.textSecondary}
+                      style={styles.textInput}
+                      autoCapitalize="sentences"
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.formSection}>
+                  <Text style={styles.inputLabel}>Ubicación de la entrega</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={isCapturingLocation}
+                    onPress={onCaptureLocation}
+                    style={styles.evidenceAction}
+                  >
+                    {isCapturingLocation ? (
+                      <ActivityIndicator size="small" color={colors.primary} />
+                    ) : (
+                      <MaterialCommunityIcons
+                        name="crosshairs-gps"
+                        size={19}
+                        color={colors.primary}
+                      />
+                    )}
+                    <Text style={styles.evidenceActionText}>
+                      {isCapturingLocation ? 'Obteniendo ubicación…' : 'Capturar ubicación GPS'}
+                    </Text>
+                  </Pressable>
+                  {coordinates && (
+                    <Text style={styles.evidenceDetail}>
+                      {coordinates.latitude.toFixed(6)}, {coordinates.longitude.toFixed(6)}
+                    </Text>
+                  )}
+                  {!coordinates && (
+                    <Text style={styles.evidenceDetail}>
+                      Si no hay señal GPS en interiores, puedes continuar sin coordenadas.
+                    </Text>
+                  )}
+                </View>
+
+                <View style={styles.formSection}>
+                  <Text style={styles.inputLabel}>Fotografía de entrega</Text>
+                  <View style={styles.evidenceButtonsRow}>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={isHandlingPhoto}
+                      onPress={onTakePhoto}
+                      style={styles.evidenceAction}
+                    >
+                      {isHandlingPhoto ? (
+                        <ActivityIndicator size="small" color={colors.primary} />
+                      ) : (
+                        <MaterialCommunityIcons name="camera-outline" size={19} color={colors.primary} />
+                      )}
+                      <Text style={styles.evidenceActionText}>Tomar foto</Text>
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={isHandlingPhoto}
+                      onPress={onChoosePhoto}
+                      style={styles.evidenceAction}
+                    >
+                      <MaterialCommunityIcons name="image-outline" size={19} color={colors.primary} />
+                      <Text style={styles.evidenceActionText}>Elegir de galería</Text>
+                    </Pressable>
+                  </View>
+                  {evidencePhotoUri && (
+                    <Image source={{ uri: evidencePhotoUri }} style={styles.evidenceThumbnail} />
+                  )}
+                </View>
+
+                <View style={styles.formSection}>
+                  <Text style={styles.inputLabel}>Firma del representante *</Text>
+                  <SignaturePad
+                    key={signatureRevision}
+                    value={signatureSvgPaths}
+                    onChange={onSetSignature}
+                  />
+                </View>
+
+                {passportNotice && (
+                  <Text accessibilityLiveRegion="polite" style={styles.passportNotice}>
+                    {passportNotice}
+                  </Text>
+                )}
+              </View>
+            )}
+
             <View style={styles.offlineFormNote}>
               <MaterialCommunityIcons name="cloud-off-outline" size={18} color={colors.offline} />
               <Text style={styles.offlineFormText}>
@@ -994,6 +1367,37 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xl,
     gap: spacing.md,
   },
+  segmentedControl: {
+    flexDirection: 'row',
+    gap: 5,
+    padding: 4,
+    borderRadius: 13,
+    backgroundColor: '#E8EDE9',
+  },
+  segmentTab: {
+    minHeight: 40,
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 7,
+    borderRadius: 10,
+  },
+  segmentTabSelected: { backgroundColor: colors.primary },
+  segmentText: { color: colors.textSecondary, fontSize: 10, fontWeight: '700' },
+  segmentTextSelected: { color: colors.onPrimary },
+  segmentBadge: {
+    minWidth: 17,
+    height: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 9,
+    backgroundColor: colors.warningBackground,
+  },
+  segmentBadgeSelected: { backgroundColor: colors.onPrimary },
+  segmentBadgeText: { color: colors.offline, fontSize: 8, fontWeight: '800' },
+  segmentBadgeTextSelected: { color: colors.primary },
   headingRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1358,6 +1762,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     lineHeight: 17,
   },
+  toastActionText: {
+    color: '#D5F0DE',
+    fontSize: 11,
+    fontWeight: '800',
+  },
   modalSafeArea: {
     flex: 1,
     backgroundColor: colors.background,
@@ -1623,6 +2032,86 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   disabledButton: { opacity: 0.65 },
+  passportSection: {
+    gap: spacing.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 16,
+    backgroundColor: colors.primaryLight,
+  },
+  passportHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  passportIcon: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: colors.surface,
+  },
+  passportHeadingCopy: { flex: 1, gap: 2 },
+  passportTitle: {
+    color: colors.primaryDark,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  passportSubtitle: {
+    color: colors.textSecondary,
+    fontSize: 11,
+  },
+  passportInputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+  },
+  passportHalfInput: {
+    flex: 1,
+    gap: 7,
+  },
+  evidenceButtonsRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  evidenceAction: {
+    minHeight: 44,
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 11,
+    backgroundColor: colors.surface,
+  },
+  evidenceActionText: {
+    flexShrink: 1,
+    color: colors.primary,
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  evidenceDetail: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  evidenceThumbnail: {
+    width: '100%',
+    height: 170,
+    borderRadius: 11,
+    backgroundColor: colors.surface,
+  },
+  passportNotice: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 16,
+  },
   scannerSafeArea: {
     flex: 1,
     padding: spacing.md,

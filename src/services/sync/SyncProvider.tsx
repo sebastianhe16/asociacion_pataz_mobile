@@ -19,6 +19,8 @@ interface SyncContextValue {
   pendingCount: number;
   pendingMovementCount: number;
   pendingFieldCount: number;
+  pendingOrderCount: number;
+  pendingApprovalOrderCount: number;
   queue: SyncQueueEntry[];
   isQueueLoading: boolean;
   isSyncing: boolean;
@@ -35,6 +37,8 @@ export function SyncProvider({ children }: PropsWithChildren) {
   const [dashboard, setDashboard] = useState<{
     pendingMovementCount: number;
     pendingFieldCount: number;
+    pendingOrderCount: number;
+    pendingApprovalOrderCount: number;
     queue: SyncQueueEntry[];
   } | null>(null);
   const [isQueueLoading, setIsQueueLoading] = useState(true);
@@ -43,7 +47,9 @@ export function SyncProvider({ children }: PropsWithChildren) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const pendingMovementCount = dashboard?.pendingMovementCount ?? 0;
   const pendingFieldCount = dashboard?.pendingFieldCount ?? 0;
-  const pendingCount = pendingMovementCount + pendingFieldCount;
+  const pendingOrderCount = dashboard?.pendingOrderCount ?? 0;
+  const pendingApprovalOrderCount = dashboard?.pendingApprovalOrderCount ?? 0;
+  const pendingCount = pendingMovementCount + pendingFieldCount + pendingOrderCount;
   const queue = dashboard?.queue ?? EMPTY_QUEUE;
 
   const refreshPendingCount = useCallback(async () => {
@@ -122,6 +128,8 @@ export function SyncProvider({ children }: PropsWithChildren) {
       pendingCount,
       pendingMovementCount,
       pendingFieldCount,
+      pendingOrderCount,
+      pendingApprovalOrderCount,
       queue,
       isQueueLoading,
       isSyncing,
@@ -134,6 +142,8 @@ export function SyncProvider({ children }: PropsWithChildren) {
       pendingCount,
       pendingMovementCount,
       pendingFieldCount,
+      pendingOrderCount,
+      pendingApprovalOrderCount,
       queue,
       isQueueLoading,
       isSyncing,

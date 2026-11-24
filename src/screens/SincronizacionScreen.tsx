@@ -34,6 +34,7 @@ export default function SincronizacionScreen() {
     pendingCount,
     pendingMovementCount,
     pendingFieldCount,
+    pendingOrderCount,
     queue,
     isQueueLoading,
     isSyncing,
@@ -158,6 +159,13 @@ export default function SincronizacionScreen() {
             tint="#E4F1F5"
             iconColor="#24647C"
           />
+          <CounterCard
+            icon="file-document-outline"
+            label="Órdenes de compra"
+            value={pendingOrderCount}
+            tint="#FFF0DF"
+            iconColor="#A85B12"
+          />
         </View>
 
         {successVisible && (
@@ -241,7 +249,7 @@ export default function SincronizacionScreen() {
             </View>
             <Text style={styles.emptyTitle}>Cola al día</Text>
             <Text style={styles.emptyText}>
-              No hay movimientos ni fichas esperando sincronización.
+              No hay movimientos, fichas u órdenes esperando sincronización.
             </Text>
           </View>
         ) : (
@@ -317,7 +325,7 @@ function SyncLogCard({ log }: { log: SyncLog }) {
         ]}
       >
         <MaterialCommunityIcons
-          name={log.entityType === 'MOVIMIENTO_ALMACEN' ? 'swap-vertical' : 'clipboard-text-outline'}
+          name={getEntityIcon(log.entityType)}
           size={19}
           color={isSuccessful ? colors.online : colors.error}
         />
@@ -325,7 +333,7 @@ function SyncLogCard({ log }: { log: SyncLog }) {
       <View style={styles.queueCardBody}>
         <View style={styles.queueCardTop}>
           <Text style={styles.queueType}>
-            {log.entityType === 'MOVIMIENTO_ALMACEN' ? 'MOVIMIENTO DE ALMACÉN' : 'FICHA DE CAMPO'}
+            {getEntityLabel(log.entityType)}
           </Text>
           <View style={[styles.statusPill, isSuccessful ? styles.syncedPill : styles.errorPill]}>
             <Text style={[styles.statusLabel, isSuccessful ? styles.syncedStatus : styles.errorStatus]}>
@@ -369,21 +377,20 @@ function CounterCard({ icon, label, value, tint, iconColor }: CounterCardProps) 
 
 function QueueCard({ entry }: { entry: SyncQueueEntry }) {
   const hasError = entry.syncStatus === 'ERROR';
-  const isMovement = entry.entityType === 'MOVIMIENTO_ALMACEN';
 
   return (
     <View style={styles.queueCard}>
       <View style={styles.queueCardIcon}>
         <MaterialCommunityIcons
-          name={isMovement ? 'swap-vertical' : 'clipboard-text-outline'}
+          name={getEntityIcon(entry.entityType)}
           size={19}
-          color={isMovement ? colors.primary : '#24647C'}
+          color={getEntityColor(entry.entityType)}
         />
       </View>
       <View style={styles.queueCardBody}>
         <View style={styles.queueCardTop}>
           <Text style={styles.queueType}>
-            {isMovement ? 'MOVIMIENTO DE ALMACÉN' : 'FICHA DE CAMPO'}
+            {getEntityLabel(entry.entityType)}
           </Text>
           <View style={[styles.statusPill, hasError ? styles.errorPill : styles.pendingPill]}>
             <Text style={[styles.statusLabel, hasError ? styles.errorStatus : styles.pendingStatus]}>
@@ -400,6 +407,33 @@ function QueueCard({ entry }: { entry: SyncQueueEntry }) {
       </View>
     </View>
   );
+}
+
+function getEntityIcon(entityType: SyncQueueEntry['entityType']) {
+  if (entityType === 'MOVIMIENTO_ALMACEN') {
+    return 'swap-vertical';
+  }
+  if (entityType === 'ORDEN_COMPRA') {
+    return 'file-document-outline';
+  }
+  return 'clipboard-text-outline';
+}
+
+function getEntityLabel(entityType: SyncQueueEntry['entityType']): string {
+  if (entityType === 'MOVIMIENTO_ALMACEN') {
+    return 'MOVIMIENTO DE ALMACÉN';
+  }
+  if (entityType === 'ORDEN_COMPRA') {
+    return 'ORDEN DE COMPRA';
+  }
+  return 'FICHA DE CAMPO';
+}
+
+function getEntityColor(entityType: SyncQueueEntry['entityType']): string {
+  if (entityType === 'MOVIMIENTO_ALMACEN') {
+    return colors.primary;
+  }
+  return entityType === 'ORDEN_COMPRA' ? '#A85B12' : '#24647C';
 }
 
 const styles = StyleSheet.create({

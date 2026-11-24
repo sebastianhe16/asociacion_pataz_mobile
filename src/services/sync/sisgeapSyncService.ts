@@ -16,10 +16,15 @@ interface PendingFieldForm {
   timestamp: string;
 }
 
+interface PendingOrder {
+  id: string;
+  timestamp: string;
+}
+
 interface PendingPackage {
   id: string;
   timestamp: string;
-  table: 'movimientos_almacen' | 'fichas_campo';
+  table: 'movimientos_almacen' | 'fichas_campo' | 'ordenes_compra';
   entityType: SyncEntityType;
   endpoint: string;
 }
@@ -32,7 +37,7 @@ export interface SyncResult {
 async function loadPendingPackages(
   database: SQLiteDatabase,
 ): Promise<PendingPackage[]> {
-  const [movements, fieldForms] = await Promise.all([
+  const [movements, fieldForms, orders] = await Promise.all([
     database.getAllAsync<PendingMovement>(
       `SELECT id, timestamp FROM movimientos_almacen
        WHERE sync_status IN ('PENDING', 'ERROR') ORDER BY timestamp ASC LIMIT ?`,
@@ -41,6 +46,11 @@ async function loadPendingPackages(
     database.getAllAsync<PendingFieldForm>(
       `SELECT id, timestamp FROM fichas_campo
        WHERE sync_status IN ('PENDING', 'ERROR') ORDER BY timestamp ASC LIMIT ?`,
+      BATCH_SIZE,
+    ),
+    database.getAllAsync<PendingOrder>(
+      `SELECT id, fecha_actualizacion AS timestamp FROM ordenes_compra
+       WHERE sync_status = 'PENDING' ORDER BY fecha_actualizacion ASC LIMIT ?`,
       BATCH_SIZE,
     ),
   ]);
@@ -57,6 +67,12 @@ async function loadPendingPackages(
       table: 'fichas_campo' as const,
       entityType: 'FICHA_CAMPO' as const,
       endpoint: '/api/v1/sisgeap/fichas-campo',
+    })),
+    ...orders.map((item) => ({
+      ...item,
+      table: 'ordenes_compra' as const,
+      entityType: 'ORDEN_COMPRA' as const,
+      endpoint: '/api/v1/sisgeap/ordenes-compra',
     })),
   ].sort((first, second) => first.timestamp.localeCompare(second.timestamp))
     .slice(0, BATCH_SIZE);
@@ -116,7 +132,8 @@ export async function syncPendingRecords(isOnline: boolean): Promise<SyncResult>
   const remaining = await database.getFirstAsync<{ count: number }>(
     `SELECT
       (SELECT COUNT(*) FROM movimientos_almacen WHERE sync_status IN ('PENDING', 'ERROR')) +
-      (SELECT COUNT(*) FROM fichas_campo WHERE sync_status IN ('PENDING', 'ERROR')) AS count`,
+      (SELECT COUNT(*) FROM fichas_campo WHERE sync_status IN ('PENDING', 'ERROR')) +
+      (SELECT COUNT(*) FROM ordenes_compra WHERE sync_status = 'PENDING') AS count`,
   );
 
   return { syncedCount, remainingCount: remaining?.count ?? 0 };

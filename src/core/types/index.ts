@@ -7,6 +7,7 @@ export type EjeProyecto =
 export type SyncStatus = 'PENDING' | 'SYNCED' | 'ERROR';
 export type TipoMovimiento = 'ENTRADA' | 'SALIDA';
 export type OrigenMovimiento = 'COMPRA' | 'DONACION';
+export * from './ordenCompra';
 
 export interface Almacen {
   id: string;
@@ -35,6 +36,21 @@ export interface MovimientoAlmacen {
   destinoCaserio: string | null;
   timestamp: string;
   syncStatus: SyncStatus;
+  receptorNombre: string | null;
+  receptorDni: string | null;
+  receptorCargo: string | null;
+  latitud: number | null;
+  longitud: number | null;
+  fotoUri: string | null;
+  firmaSvgPaths: string | null;
+  hashSha256: string | null;
+}
+
+export interface WarehouseMovementRecord extends MovimientoAlmacen {
+  insumoCodigo: string;
+  insumoNombre: string;
+  almacenId: string;
+  almacenNombre: string;
 }
 
 export interface ProyectoCampo {
@@ -75,7 +91,7 @@ export interface NuevaFichaCampo {
   longitud: number | null;
 }
 
-export type SyncEntityType = 'MOVIMIENTO_ALMACEN' | 'FICHA_CAMPO';
+export type SyncEntityType = 'MOVIMIENTO_ALMACEN' | 'FICHA_CAMPO' | 'ORDEN_COMPRA';
 export type SyncLogStatus = 'SUCCESS' | 'ERROR';
 
 export interface SyncQueueEntry {
@@ -90,6 +106,8 @@ export interface SyncQueueEntry {
 export interface SyncDashboardData {
   pendingMovementCount: number;
   pendingFieldCount: number;
+  pendingOrderCount: number;
+  pendingApprovalOrderCount: number;
   queue: SyncQueueEntry[];
 }
 

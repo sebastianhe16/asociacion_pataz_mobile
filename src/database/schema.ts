@@ -29,7 +29,15 @@ export const DATABASE_SCHEMA = `
     destino_caserio TEXT,
     timestamp TEXT NOT NULL,
     sync_status TEXT NOT NULL DEFAULT 'PENDING'
-      CHECK (sync_status IN ('PENDING', 'SYNCED', 'ERROR'))
+      CHECK (sync_status IN ('PENDING', 'SYNCED', 'ERROR')),
+    receptor_nombre TEXT,
+    receptor_dni TEXT,
+    receptor_cargo TEXT,
+    latitud REAL,
+    longitud REAL,
+    foto_uri TEXT,
+    firma_svg_paths TEXT,
+    hash_sha256 TEXT
   );
 
   CREATE TABLE IF NOT EXISTS proyectos (
@@ -40,6 +48,28 @@ export const DATABASE_SCHEMA = `
       eje IN ('Salud', 'Agricultura', 'Educación', 'Agua y saneamiento')
     ),
     caserio TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS ordenes_compra (
+    id TEXT PRIMARY KEY NOT NULL,
+    codigo_orden TEXT NOT NULL UNIQUE,
+    proyecto_id TEXT NOT NULL REFERENCES proyectos(id),
+    proyecto_nombre TEXT NOT NULL,
+    almacen_destino_id TEXT NOT NULL REFERENCES almacenes(id),
+    solicitante_id TEXT NOT NULL,
+    solicitante_nombre TEXT NOT NULL,
+    justificacion TEXT NOT NULL,
+    prioridad TEXT NOT NULL CHECK (prioridad IN ('NORMAL', 'ALTA', 'URGENTE')),
+    estado TEXT NOT NULL CHECK (estado IN ('PENDIENTE', 'APROBADA', 'RECHAZADA', 'ATENDIDA')),
+    items_json TEXT NOT NULL,
+    fecha_solicitud TEXT NOT NULL,
+    aprobado_por_nombre TEXT,
+    fecha_revision TEXT,
+    observacion_revision TEXT,
+    fecha_atendida TEXT,
+    fecha_actualizacion TEXT NOT NULL,
+    sync_status TEXT NOT NULL DEFAULT 'PENDING'
+      CHECK (sync_status IN ('PENDING', 'SYNCED'))
   );
 
   CREATE TABLE IF NOT EXISTS fichas_campo (

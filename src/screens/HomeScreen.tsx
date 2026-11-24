@@ -3,6 +3,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   ActivityIndicator,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,12 +14,15 @@ import { colors, spacing } from '../core/theme';
 import {
   getDatabase,
   getRecentActivities,
+  getWarehouseMovementDetails,
   getWarehouseStatusSummaries,
   type RecentActivity,
   type WarehouseStatusSummary,
 } from '../database/db';
+import type { WarehouseMovementRecord } from '../core/types';
 import { useAuth } from '../services/auth/AuthProvider';
 import { useSyncStatus } from '../services/sync/SyncProvider';
+import ActaEntregaModal from './ActaEntregaModal';
 
 type IconName = ComponentProps<typeof MaterialCommunityIcons>['name'];
 
@@ -66,8 +70,28 @@ export default function HomeScreen() {
   const [counts, setCounts] = useState<SummaryCounts | null>(null);
   const [activities, setActivities] = useState<RecentActivity[]>([]);
   const [warehouseSummaries, setWarehouseSummaries] = useState<WarehouseStatusSummary[]>([]);
+  const [actaMovement, setActaMovement] = useState<WarehouseMovementRecord | null>(null);
+  const [actaVisible, setActaVisible] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const openActivityActa = async (activity: RecentActivity) => {
+    if (activity.hasActa !== 1) {
+      return;
+    }
+
+    try {
+      const movement = await getWarehouseMovementDetails(activity.id);
+      if (!movement?.hashSha256) {
+        throw new Error('El acta de esta salida no está disponible en la base local.');
+      }
+      setActaMovement(movement);
+      setActaVisible(true);
+      setError(null);
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : 'No se pudo abrir el acta de entrega.');
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -191,7 +215,11 @@ export default function HomeScreen() {
         ) : (
           <View style={styles.activityList}>
             {activities.map((activity) => (
-              <ActivityRow key={`${activity.entityType}-${activity.id}`} activity={activity} />
+              <ActivityRow
+                key={`${activity.entityType}-${activity.id}`}
+                activity={activity}
+                onOpenActa={() => void openActivityActa(activity)}
+              />
             ))}
           </View>
         )}
@@ -208,11 +236,25 @@ export default function HomeScreen() {
           ))}
         </View>
       </ScrollView>
+      <ActaEntregaModal
+        visible={actaVisible}
+        movement={actaMovement}
+        onClose={() => {
+          setActaVisible(false);
+          setActaMovement(null);
+        }}
+      />
     </SafeAreaView>
   );
 }
 
-function ActivityRow({ activity }: { activity: RecentActivity }) {
+function ActivityRow({
+  activity,
+  onOpenActa,
+}: {
+  activity: RecentActivity;
+  onOpenActa: () => void;
+}) {
   const status = activity.syncStatus === 'SYNCED'
     ? { label: 'Sincronizado', color: colors.online, backgroundColor: colors.accentLight }
     : activity.syncStatus === 'ERROR'
@@ -220,7 +262,13 @@ function ActivityRow({ activity }: { activity: RecentActivity }) {
       : { label: 'Pendiente', color: colors.offline, backgroundColor: colors.warningBackground };
 
   return (
-    <View style={styles.activityRow}>
+    <Pressable
+      accessibilityRole={activity.hasActa === 1 ? 'button' : undefined}
+      accessibilityLabel={activity.hasActa === 1 ? `${activity.title}. Abrir acta de entrega` : undefined}
+      disabled={activity.hasActa !== 1}
+      onPress={onOpenActa}
+      style={({ pressed }) => [styles.activityRow, pressed && styles.activityRowPressed]}
+    >
       <View style={styles.activityIcon}>
         <MaterialCommunityIcons
           name={activity.entityType === 'MOVIMIENTO_ALMACEN' ? 'swap-vertical' : 'clipboard-text-outline'}
@@ -236,7 +284,10 @@ function ActivityRow({ activity }: { activity: RecentActivity }) {
       <View style={[styles.activityStatus, { backgroundColor: status.backgroundColor }]}>
         <Text style={[styles.activityStatusText, { color: status.color }]}>{status.label}</Text>
       </View>
-    </View>
+      {activity.hasActa === 1 && (
+        <MaterialCommunityIcons name="chevron-right" size={18} color={colors.textSecondary} />
+      )}
+    </Pressable>
   );
 }
 
@@ -436,6 +487,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.surface,
   },
+  activityRowPressed: { opacity: 0.75 },
   activityIcon: {
     width: 38,
     height: 38,

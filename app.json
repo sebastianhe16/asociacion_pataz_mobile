@@ -36,7 +36,17 @@
         {
           "locationWhenInUsePermission": "Permitir que Asociación Pataz registre coordenadas de las visitas de campo."
         }
-      ]
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Permitir que Asociación Pataz fotografíe las entregas de almacén.",
+          "photosPermission": "Permitir que Asociación Pataz adjunte evidencia fotográfica de las entregas.",
+          "microphonePermission": false
+        }
+      ],
+      "expo-sharing",
+      "expo-font"
     ]
   }
 }
