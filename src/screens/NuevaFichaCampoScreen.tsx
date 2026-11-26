@@ -28,7 +28,7 @@ interface NuevaFichaCampoScreenProps {
 interface CapturedCoordinates {
   latitude: number;
   longitude: number;
-  source: 'GPS';
+  source: 'GPS' | 'SEDE';
 }
 
 const ACTIVITIES_BY_AXIS: Record<EjeProyecto, string[]> = {
@@ -106,7 +106,16 @@ export default function NuevaFichaCampoScreen({
         source: 'GPS',
       });
     } catch (error) {
-      setLocationError(getErrorMessage(error));
+      if (Platform.OS === 'web') {
+        setCoordinates({
+          latitude: -7.7852,
+          longitude: -77.5905,
+          source: 'SEDE',
+        });
+        setLocationError('El navegador no permitió obtener el GPS. Se registró la ubicación de referencia de Pataz, La Libertad.');
+      } else {
+        setLocationError(getErrorMessage(error));
+      }
     } finally {
       setIsCapturingLocation(false);
     }

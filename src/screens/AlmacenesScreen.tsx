@@ -33,19 +33,24 @@ import {
   findInventoryItemByCode,
   getAllInventoryItems,
   getInventoryByWarehouse,
+  getRecentWarehouseMovements,
   getWarehouses,
   registerWarehouseMovement,
   type InventoryItem,
+  type InventoryBalance,
 } from '../database/db';
 import SignaturePad from '../components/SignaturePad';
 import ActaEntregaModal from './ActaEntregaModal';
 import OrdenesCompraView from './OrdenesCompraView';
 import { persistEvidencePhoto } from '../services/warehouse/evidencePhotoService';
 import { useSyncStatus } from '../services/sync/SyncProvider';
+import { useAuth } from '../services/auth/AuthProvider';
+import { getInventoryBalances } from '../services/inventory/desbalanceService';
+import TrackingEnvioModal from './TrackingEnvioModal';
 
-type CategoryFilter = 'Todas' | CategoriaInsumo;
+type CategoryFilter = 'Todas' | CategoriaInsumo | 'Desbalances';
 
-const CATEGORY_FILTERS: CategoryFilter[] = ['Todas', 'Agrícola', 'Salud', 'Educación'];
+const CATEGORY_FILTERS: CategoryFilter[] = ['Todas', 'Agrícola', 'Salud', 'Educación', 'Desbalances'];
 
 const categoryIcon: Record<CategoriaInsumo, keyof typeof MaterialCommunityIcons.glyphMap> = {
   Agrícola: 'sprout',
@@ -58,10 +63,13 @@ function getErrorMessage(error: unknown): string {
 }
 
 export default function AlmacenesScreen() {
+  const { user } = useAuth();
   const [warehouses, setWarehouses] = useState<Almacen[]>([]);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState('alm-lavasen');
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [inventoryCatalog, setInventoryCatalog] = useState<InventoryItem[]>([]);
+  const [inventoryBalances, setInventoryBalances] = useState<InventoryBalance[]>([]);
+  const [recentMovements, setRecentMovements] = useState<WarehouseMovementRecord[]>([]);
   const [loadedWarehouseId, setLoadedWarehouseId] = useState('');
   const [screenError, setScreenError] = useState<string | null>(null);
   const [searchText, setSearchText] = useState('');
@@ -86,6 +94,11 @@ export default function AlmacenesScreen() {
   const [isHandlingPhoto, setIsHandlingPhoto] = useState(false);
   const [actaVisible, setActaVisible] = useState(false);
   const [actaMovement, setActaMovement] = useState<WarehouseMovementRecord | null>(null);
+  const [trackingMovement, setTrackingMovement] = useState<WarehouseMovementRecord | null>(null);
+  const [orderDeficitPrefill, setOrderDeficitPrefill] = useState<{
+    insumoId: string;
+    cantidad: number;
+  } | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -104,6 +117,22 @@ export default function AlmacenesScreen() {
       setScreenError(null);
     } catch (error) {
       setLoadedWarehouseId(warehouseId);
+      setScreenError(getErrorMessage(error));
+    }
+  }, []);
+
+  const loadInventoryBalances = useCallback(async () => {
+    try {
+      setInventoryBalances(await getInventoryBalances());
+    } catch (error) {
+      setScreenError(getErrorMessage(error));
+    }
+  }, []);
+
+  const loadRecentMovements = useCallback(async (warehouseId: string) => {
+    try {
+      setRecentMovements(await getRecentWarehouseMovements(warehouseId));
+    } catch (error) {
       setScreenError(getErrorMessage(error));
     }
   }, []);
@@ -127,6 +156,42 @@ export default function AlmacenesScreen() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    getInventoryBalances()
+      .then((rows) => {
+        if (active) {
+          setInventoryBalances(rows);
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setScreenError(getErrorMessage(error));
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    getRecentWarehouseMovements(selectedWarehouseId)
+      .then((rows) => {
+        if (active) {
+          setRecentMovements(rows);
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setScreenError(getErrorMessage(error));
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedWarehouseId]);
 
   useEffect(() => {
     let active = true;
@@ -180,6 +245,9 @@ export default function AlmacenesScreen() {
   }, [toastMessage]);
 
   const visibleInventory = useMemo(() => {
+    if (categoryFilter === 'Desbalances') {
+      return inventoryBalances.filter((item) => item.estadoBalance === 'DEFICIT');
+    }
     const normalizedQuery = searchText.trim().toLocaleLowerCase();
     return inventory.filter((item) => {
       const matchesCategory =
@@ -188,7 +256,12 @@ export default function AlmacenesScreen() {
         .toLocaleLowerCase();
       return matchesCategory && searchableText.includes(normalizedQuery);
     });
-  }, [categoryFilter, inventory, searchText]);
+  }, [categoryFilter, inventory, inventoryBalances, searchText]);
+
+  const deficitItems = useMemo(
+    () => inventoryBalances.filter((item) => item.estadoBalance === 'DEFICIT'),
+    [inventoryBalances],
+  );
 
   const openMovementForm = useCallback((item: InventoryItem | null = null) => {
     setSelectedItem(item);
@@ -216,6 +289,11 @@ export default function AlmacenesScreen() {
     try {
       const permissionResult = await Location.requestForegroundPermissionsAsync();
       if (!permissionResult.granted) {
+        if (Platform.OS === 'web') {
+          setCoordinates({ latitude: -7.7852, longitude: -77.5905 });
+          setPassportNotice('El navegador no autorizó el GPS. Se registró la ubicación de referencia de Pataz, La Libertad.');
+          return;
+        }
         setCoordinates(null);
         setPassportNotice('No se autorizó la ubicación. Puedes registrar la entrega sin coordenadas.');
         return;
@@ -230,6 +308,11 @@ export default function AlmacenesScreen() {
       });
       setPassportNotice('Ubicación de entrega registrada.');
     } catch (error) {
+      if (Platform.OS === 'web') {
+        setCoordinates({ latitude: -7.7852, longitude: -77.5905 });
+        setPassportNotice('No fue posible obtener el GPS del navegador. Se registró la ubicación de referencia de Pataz, La Libertad.');
+        return;
+      }
       setCoordinates(null);
       setPassportNotice(
         `${getErrorMessage(error)} Puedes continuar sin coordenadas GPS.`,
@@ -243,13 +326,14 @@ export default function AlmacenesScreen() {
     setIsHandlingPhoto(true);
     setPassportNotice(null);
     try {
-      if (source === 'camera') {
+      const useBrowserLibrary = Platform.OS === 'web';
+      if (source === 'camera' && !useBrowserLibrary) {
         const permissionResult = await ImagePicker.requestCameraPermissionsAsync();
         if (!permissionResult.granted) {
           setPassportNotice('Se requiere permiso de cámara para tomar la fotografía.');
           return;
         }
-      } else {
+      } else if (!useBrowserLibrary) {
         const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (!permissionResult.granted) {
           setPassportNotice('Se requiere permiso de galería para adjuntar la fotografía.');
@@ -257,7 +341,7 @@ export default function AlmacenesScreen() {
         }
       }
 
-      const result = source === 'camera'
+      const result = source === 'camera' && !useBrowserLibrary
         ? await ImagePicker.launchCameraAsync({
           mediaTypes: ['images'],
           quality: 0.65,
@@ -342,6 +426,10 @@ export default function AlmacenesScreen() {
           : undefined,
       });
       await loadInventory(selectedItem.almacenId);
+      await Promise.all([
+        loadInventoryBalances(),
+        loadRecentMovements(selectedItem.almacenId),
+      ]);
       try {
         setInventoryCatalog(await getAllInventoryItems());
       } catch (error) {
@@ -368,6 +456,8 @@ export default function AlmacenesScreen() {
     entryOrigin,
     coordinates,
     loadInventory,
+    loadInventoryBalances,
+    loadRecentMovements,
     movementType,
     quantity,
     recipientDni,
@@ -398,6 +488,19 @@ export default function AlmacenesScreen() {
               size={17}
               color={activeView === 'INVENTARIO' ? colors.onPrimary : colors.textSecondary}
             />
+
+            <TrackingEnvioModal
+              key={trackingMovement?.id ?? 'tracking'}
+              visible={trackingMovement !== null}
+              movement={trackingMovement}
+              onClose={() => setTrackingMovement(null)}
+              onUpdated={(updated) => {
+                setTrackingMovement(updated);
+                setRecentMovements((current) =>
+                  current.map((movement) => movement.id === updated.id ? updated : movement),
+                );
+              }}
+            />
             <Text style={[styles.segmentText, activeView === 'INVENTARIO' && styles.segmentTextSelected]}>
               Inventario
             </Text>
@@ -426,9 +529,34 @@ export default function AlmacenesScreen() {
           </Pressable>
         </View>
         {activeView === 'ORDENES' ? (
-          <OrdenesCompraView />
+          <OrdenesCompraView
+            deficitPrefill={orderDeficitPrefill}
+            onDeficitPrefillConsumed={() => setOrderDeficitPrefill(null)}
+            onOrdersChanged={() => void loadInventoryBalances()}
+          />
         ) : (
           <>
+        {deficitItems.length > 0 && (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setCategoryFilter('Desbalances')}
+            style={styles.deficitAlert}
+          >
+            <View style={styles.deficitAlertIcon}>
+              <MaterialCommunityIcons name="alert-outline" size={22} color={colors.error} />
+            </View>
+            <View style={styles.deficitAlertCopy}>
+              <Text style={styles.deficitAlertTitle}>Desbalance de inventario</Text>
+              <Text style={styles.deficitAlertText}>
+                {deficitItems.length} {deficitItems.length === 1 ? 'insumo presenta' : 'insumos presentan'} déficit frente a la demanda.
+              </Text>
+            </View>
+            <View style={styles.deficitAlertAction}>
+              <Text style={styles.deficitAlertActionText}>Ver</Text>
+              <MaterialCommunityIcons name="chevron-right" size={18} color={colors.error} />
+            </View>
+          </Pressable>
+        )}
         <View style={styles.headingRow}>
           <View style={styles.headingCopy}>
             <Text style={styles.eyebrow}>CONTROL LOGÍSTICO</Text>
@@ -515,17 +643,29 @@ export default function AlmacenesScreen() {
         >
           {CATEGORY_FILTERS.map((category) => {
             const selected = category === categoryFilter;
+            const isDesbalanceFilter = category === 'Desbalances';
             return (
               <Pressable
                 key={category}
                 accessibilityRole="button"
                 accessibilityState={{ selected }}
                 onPress={() => setCategoryFilter(category)}
-                style={[styles.filterChip, selected && styles.filterChipSelected]}
+                style={[
+                  styles.filterChip,
+                  selected && styles.filterChipSelected,
+                  isDesbalanceFilter && styles.deficitFilterChip,
+                ]}
               >
                 <Text style={[styles.filterLabel, selected && styles.filterLabelSelected]}>
                   {category}
                 </Text>
+                {isDesbalanceFilter && deficitItems.length > 0 && (
+                  <View style={[styles.deficitBadge, selected && styles.deficitBadgeSelected]}>
+                    <Text style={[styles.deficitBadgeText, selected && styles.deficitBadgeTextSelected]}>
+                      {deficitItems.length}
+                    </Text>
+                  </View>
+                )}
               </Pressable>
             );
           })}
@@ -533,10 +673,13 @@ export default function AlmacenesScreen() {
 
         <View style={styles.sectionHeading}>
           <View>
-            <Text style={styles.sectionTitle}>{selectedWarehouse?.nombre ?? 'Almacén'}</Text>
+            <Text style={styles.sectionTitle}>
+              {categoryFilter === 'Desbalances' ? 'Insumos con déficit' : selectedWarehouse?.nombre ?? 'Almacén'}
+            </Text>
             <Text style={styles.sectionSubtitle}>
-              {visibleInventory.length} {visibleInventory.length === 1 ? 'artículo' : 'artículos'}
-              {' · Stock disponible'}
+              {categoryFilter === 'Desbalances'
+                ? `${visibleInventory.length} ${visibleInventory.length === 1 ? 'insumo requiere' : 'insumos requieren'} reposición`
+                : `${visibleInventory.length} ${visibleInventory.length === 1 ? 'artículo' : 'artículos'} · Stock disponible`}
             </Text>
           </View>
           <MaterialCommunityIcons name="sort" size={21} color={colors.textSecondary} />
@@ -552,24 +695,75 @@ export default function AlmacenesScreen() {
           </View>
         )}
 
-        {isLoading ? (
+        {isLoading && categoryFilter !== 'Desbalances' ? (
           <View style={styles.loading}>
             <ActivityIndicator size="large" color={colors.primary} />
             <Text style={styles.loadingText}>Cargando inventario local…</Text>
           </View>
         ) : visibleInventory.length === 0 ? (
           <View style={styles.emptyState}>
-            <MaterialCommunityIcons name="package-variant-closed" size={34} color={colors.textSecondary} />
-            <Text style={styles.emptyTitle}>No hay insumos para mostrar</Text>
-            <Text style={styles.emptyCopy}>Prueba con otro filtro o término de búsqueda.</Text>
+            <MaterialCommunityIcons
+              name={categoryFilter === 'Desbalances' ? 'check-circle-outline' : 'package-variant-closed'}
+              size={34}
+              color={categoryFilter === 'Desbalances' ? colors.online : colors.textSecondary}
+            />
+            <Text style={styles.emptyTitle}>
+              {categoryFilter === 'Desbalances' ? 'No hay insumos con déficit' : 'No hay insumos para mostrar'}
+            </Text>
+            <Text style={styles.emptyCopy}>
+              {categoryFilter === 'Desbalances'
+                ? 'La demanda registrada está cubierta por las existencias actuales.'
+                : 'Prueba con otro filtro o término de búsqueda.'}
+            </Text>
           </View>
         ) : (
           <View style={styles.inventoryList}>
             {visibleInventory.map((item) => (
-              <InventoryCard
-                key={item.id}
-                item={item}
-                onPress={() => openMovementForm(item)}
+              categoryFilter === 'Desbalances' ? (
+                <DesbalanceCard
+                  key={item.id}
+                  item={item as InventoryBalance}
+                  onCreateOrder={user?.roleKey === 'CAMPO' ? () => {
+                    setOrderDeficitPrefill({
+                      insumoId: item.id,
+                      cantidad: Math.abs((item as InventoryBalance).diferencia),
+                    });
+                    setActiveView('ORDENES');
+                  } : undefined}
+                />
+              ) : (
+                <InventoryCard
+                  key={item.id}
+                  item={item}
+                  onPress={() => openMovementForm(item)}
+                />
+              )
+            ))}
+          </View>
+        )}
+
+        <View style={styles.sectionHeading}>
+          <View>
+            <Text style={styles.sectionTitle}>Movimientos recientes</Text>
+            <Text style={styles.sectionSubtitle}>Trazabilidad local · {selectedWarehouse?.nombre ?? 'Almacén'}</Text>
+          </View>
+        </View>
+        {recentMovements.length === 0 ? (
+          <View style={styles.emptyState}>
+            <MaterialCommunityIcons name="history" size={21} color={colors.textSecondary} />
+            <Text style={styles.emptyCopy}>Aún no hay movimientos registrados en esta sede.</Text>
+          </View>
+        ) : (
+          <View style={styles.movementHistoryList}>
+            {recentMovements.map((movement) => (
+              <WarehouseMovementCard
+                key={movement.id}
+                movement={movement}
+                onTrack={() => setTrackingMovement(movement)}
+                onOpenActa={() => {
+                  setActaMovement(movement);
+                  setActaVisible(true);
+                }}
               />
             ))}
           </View>
@@ -742,6 +936,129 @@ function InventoryCard({ item, onPress }: InventoryCardProps) {
         </View>
       </View>
     </Pressable>
+  );
+}
+
+function DesbalanceCard({
+  item,
+  onCreateOrder,
+}: {
+  item: InventoryBalance;
+  onCreateOrder?: () => void;
+}) {
+  return (
+    <View style={styles.desbalanceCard}>
+      <View style={styles.desbalanceHeading}>
+        <View style={styles.itemIcon}>
+          <MaterialCommunityIcons name={categoryIcon[item.categoria]} size={22} color={colors.primary} />
+        </View>
+        <View style={styles.desbalanceCopy}>
+          <Text style={styles.desbalanceName}>{item.nombre}</Text>
+          <Text style={styles.itemCode}>{item.codigo} · {item.almacenNombre}</Text>
+        </View>
+        <View style={styles.deficitPill}>
+          <Text style={styles.deficitPillText}>{item.diferencia} {item.unidad}</Text>
+        </View>
+      </View>
+      <View style={styles.balanceMetrics}>
+        <BalanceMetric label="Stock en almacén" value={`${item.stockActual} ${item.unidad}`} />
+        <BalanceMetric label="Cantidad solicitada" value={`${item.cantidadSolicitada} ${item.unidad}`} />
+        <BalanceMetric
+          label="Déficit exacto"
+          value={`${item.diferencia} ${item.unidad}`}
+          critical
+        />
+      </View>
+      {onCreateOrder && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Crear orden por déficit de ${Math.abs(item.diferencia)} ${item.unidad} de ${item.nombre}`}
+          onPress={onCreateOrder}
+          style={styles.createDeficitOrderButton}
+        >
+          <MaterialCommunityIcons name="file-plus-outline" size={18} color={colors.onPrimary} />
+          <Text style={styles.createDeficitOrderText}>Crear Orden por Déficit</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+function BalanceMetric({
+  label,
+  value,
+  critical = false,
+}: {
+  label: string;
+  value: string;
+  critical?: boolean;
+}) {
+  return (
+    <View style={styles.balanceMetric}>
+      <Text style={styles.balanceMetricLabel}>{label}</Text>
+      <Text style={[styles.balanceMetricValue, critical && styles.balanceMetricCritical]}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+function WarehouseMovementCard({
+  movement,
+  onTrack,
+  onOpenActa,
+}: {
+  movement: WarehouseMovementRecord;
+  onTrack: () => void;
+  onOpenActa: () => void;
+}) {
+  const timestamp = new Date(movement.timestamp);
+  const formattedTimestamp = Number.isNaN(timestamp.getTime())
+    ? movement.timestamp
+    : timestamp.toLocaleString('es-PE', {
+      day: '2-digit',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  const stateLabel = movement.estadoEnvio?.replace(/_/g, ' ') ?? '';
+  return (
+    <View style={styles.movementHistoryCard}>
+      <View style={[styles.movementHistoryIcon, movement.tipo === 'SALIDA' && styles.movementHistoryExitIcon]}>
+        <MaterialCommunityIcons
+          name={movement.tipo === 'SALIDA' ? 'arrow-up-right' : 'arrow-down-left'}
+          size={19}
+          color={movement.tipo === 'SALIDA' ? colors.error : colors.online}
+        />
+      </View>
+      <View style={styles.movementHistoryCopy}>
+        <Text style={styles.movementHistoryTitle} numberOfLines={1}>
+          {movement.tipo === 'SALIDA' ? 'Salida' : 'Entrada'} · {movement.insumoNombre}
+        </Text>
+        <Text style={styles.movementHistoryDetail}>
+          {movement.cantidad} · {movement.responsable} · {formattedTimestamp}
+        </Text>
+        {movement.codigoEnvio && (
+          <Text style={styles.shipmentCode}>
+            {movement.codigoEnvio} · {stateLabel}
+          </Text>
+        )}
+        <View style={styles.movementHistoryActions}>
+          {movement.codigoEnvio && (
+            <Pressable accessibilityRole="button" onPress={onTrack} style={styles.trackingAction}>
+              <MaterialCommunityIcons name="truck-fast-outline" size={15} color={colors.primary} />
+              <Text style={styles.trackingActionText}>Seguimiento</Text>
+            </Pressable>
+          )}
+          {movement.hashSha256 && (
+            <Pressable accessibilityRole="button" onPress={onOpenActa} style={styles.actaAction}>
+              <MaterialCommunityIcons name="file-certificate-outline" size={15} color={colors.primary} />
+              <Text style={styles.trackingActionText}>Acta</Text>
+            </Pressable>
+          )}
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -1367,6 +1684,31 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xl,
     gap: spacing.md,
   },
+  deficitAlert: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: 12,
+    borderWidth: 1,
+    borderLeftWidth: 4,
+    borderColor: '#F0D8B9',
+    borderLeftColor: colors.offline,
+    borderRadius: 13,
+    backgroundColor: colors.warningBackground,
+  },
+  deficitAlertIcon: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+  },
+  deficitAlertCopy: { flex: 1, gap: 3 },
+  deficitAlertTitle: { color: colors.text, fontSize: 12, fontWeight: '800' },
+  deficitAlertText: { color: colors.textSecondary, fontSize: 10, lineHeight: 14 },
+  deficitAlertAction: { flexDirection: 'row', alignItems: 'center', gap: 1 },
+  deficitAlertActionText: { color: colors.error, fontSize: 10, fontWeight: '800' },
   segmentedControl: {
     flexDirection: 'row',
     gap: 5,
@@ -1528,6 +1870,9 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     minHeight: 36,
     justifyContent: 'center',
     paddingHorizontal: 15,
@@ -1540,6 +1885,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primaryLight,
     borderColor: colors.primaryLight,
   },
+  deficitFilterChip: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  deficitBadge: {
+    minWidth: 18,
+    height: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    backgroundColor: colors.dangerBackground,
+  },
+  deficitBadgeSelected: { backgroundColor: colors.onPrimary },
+  deficitBadgeText: { color: colors.error, fontSize: 8, fontWeight: '800' },
+  deficitBadgeTextSelected: { color: colors.primary },
   filterLabel: {
     color: colors.textSecondary,
     fontSize: 12,
@@ -1563,6 +1921,76 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   inventoryList: { gap: 10 },
+  desbalanceCard: {
+    gap: 12,
+    padding: 13,
+    borderWidth: 1,
+    borderColor: '#F0D8B9',
+    borderRadius: 15,
+    backgroundColor: colors.surface,
+  },
+  desbalanceHeading: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+  desbalanceCopy: { flex: 1, gap: 4 },
+  desbalanceName: { color: colors.text, fontSize: 13, lineHeight: 18, fontWeight: '800' },
+  deficitPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: colors.dangerBackground,
+  },
+  deficitPillText: { color: colors.error, fontSize: 10, fontWeight: '800' },
+  balanceMetrics: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingVertical: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  balanceMetric: { flex: 1, gap: 4 },
+  balanceMetricLabel: { color: colors.textSecondary, fontSize: 8, lineHeight: 11 },
+  balanceMetricValue: { color: colors.text, fontSize: 10, fontWeight: '800' },
+  balanceMetricCritical: { color: colors.error },
+  createDeficitOrderButton: {
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    paddingHorizontal: 10,
+    borderRadius: 11,
+    backgroundColor: colors.primary,
+  },
+  createDeficitOrderText: { color: colors.onPrimary, fontSize: 11, fontWeight: '800' },
+  movementHistoryList: { gap: 8 },
+  movementHistoryCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: 11,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 13,
+    backgroundColor: colors.surface,
+  },
+  movementHistoryIcon: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 11,
+    backgroundColor: colors.accentLight,
+  },
+  movementHistoryExitIcon: { backgroundColor: colors.dangerBackground },
+  movementHistoryCopy: { flex: 1, gap: 4 },
+  movementHistoryTitle: { color: colors.text, fontSize: 11, fontWeight: '800' },
+  movementHistoryDetail: { color: colors.textSecondary, fontSize: 9, lineHeight: 14 },
+  shipmentCode: { color: colors.primary, fontSize: 9, fontWeight: '800' },
+  movementHistoryActions: { flexDirection: 'row', gap: 12, marginTop: 3 },
+  trackingAction: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  actaAction: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  trackingActionText: { color: colors.primary, fontSize: 9, fontWeight: '800' },
   inventoryCard: {
     flexDirection: 'row',
     gap: 12,

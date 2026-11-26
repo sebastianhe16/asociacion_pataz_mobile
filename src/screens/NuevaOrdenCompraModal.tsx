@@ -43,6 +43,7 @@ interface OrderItemDraft {
 interface NuevaOrdenCompraModalProps {
   visible: boolean;
   user: UsuarioSesion;
+  deficitPrefill: { insumoId: string; cantidad: number } | null;
   onClose: () => void;
   onCreated: () => void;
 }
@@ -63,6 +64,7 @@ function createEmptyItem(): OrderItemDraft {
 export default function NuevaOrdenCompraModal({
   visible,
   user,
+  deficitPrefill,
   onClose,
   onCreated,
 }: NuevaOrdenCompraModalProps) {
@@ -90,7 +92,25 @@ export default function NuevaOrdenCompraModal({
           setWarehouses(warehouseRows);
           setCatalog(catalogRows);
           setProjectId((current) => current || projectRows[0]?.id || '');
-          setWarehouseId((current) => current || warehouseRows[0]?.id || '');
+          const deficitItem = deficitPrefill
+            ? catalogRows.find((item) => item.id === deficitPrefill.insumoId)
+            : null;
+          if (deficitPrefill && !deficitItem) {
+            throw new Error('El insumo del déficit ya no está disponible en el catálogo local.');
+          }
+          if (deficitItem && deficitPrefill) {
+            setWarehouseId(deficitItem.almacenId);
+            setItems([{
+              ...createEmptyItem(),
+              insumoId: deficitItem.id,
+              nombre: deficitItem.nombre,
+              cantidad: String(deficitPrefill.cantidad),
+              unidad: deficitItem.unidad,
+            }]);
+          } else {
+            setWarehouseId((current) => current || warehouseRows[0]?.id || '');
+            setItems([createEmptyItem()]);
+          }
         }
       })
       .catch((loadError: unknown) => {
@@ -106,7 +126,7 @@ export default function NuevaOrdenCompraModal({
     return () => {
       active = false;
     };
-  }, [visible]);
+  }, [deficitPrefill, visible]);
 
   const selectedProject = projects.find((project) => project.id === projectId);
   const filteredCatalog = useMemo(

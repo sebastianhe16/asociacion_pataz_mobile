@@ -1,6 +1,5 @@
-import { File } from 'expo-file-system';
 import * as Print from 'expo-print';
-import * as Sharing from 'expo-sharing';
+import { Platform } from 'react-native';
 import type { WarehouseMovementRecord } from '../../core/types';
 import { parseSignaturePaths } from '../warehouse/passportIntegrity';
 import { readEvidencePhotoAsDataUri } from '../warehouse/evidencePhotoService';
@@ -47,6 +46,26 @@ async function getPhotoDataUri(uri: string | null): Promise<string | null> {
 
   if (uri.startsWith('data:image/')) {
     return uri;
+  }
+
+  if (Platform.OS === 'web') {
+    const response = await fetch(uri);
+    if (!response.ok) {
+      throw new Error('No se pudo leer la fotografía de evidencia en el navegador.');
+    }
+    const blob = await response.blob();
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result !== 'string') {
+          reject(new Error('No se pudo convertir la fotografía de evidencia.'));
+          return;
+        }
+        resolve(reader.result);
+      };
+      reader.onerror = () => reject(reader.error ?? new Error('No se pudo leer la fotografía de evidencia.'));
+      reader.readAsDataURL(blob);
+    });
   }
 
   return readEvidencePhotoAsDataUri(uri);
@@ -157,12 +176,17 @@ export async function shareDeliveryActPdf(
 
   const signatureSvg = buildSignatureSvg(movement.firmaSvgPaths);
   const photoDataUri = await getPhotoDataUri(movement.fotoUri);
-  const { uri } = await Print.printToFileAsync({
-    html: buildActHtml(movement, signatureSvg, photoDataUri),
-  });
+  const html = buildActHtml(movement, signatureSvg, photoDataUri);
+  if (Platform.OS === 'web') {
+    await Print.printAsync({ html });
+    return;
+  }
 
+  const { uri } = await Print.printToFileAsync({ html });
+  const Sharing = await import('expo-sharing');
   if (!(await Sharing.isAvailableAsync())) {
-    throw new Error(`El PDF se generó en ${new File(uri).name}, pero no hay una opción de compartir disponible en este dispositivo.`);
+    const fileName = uri.split(/[\\/]/).pop() ?? 'acta.pdf';
+    throw new Error(`El PDF se generó en ${fileName}, pero no hay una opción de compartir disponible en este dispositivo.`);
   }
 
   await Sharing.shareAsync(uri, {

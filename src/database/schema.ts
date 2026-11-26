@@ -37,7 +37,17 @@ export const DATABASE_SCHEMA = `
     longitud REAL,
     foto_uri TEXT,
     firma_svg_paths TEXT,
-    hash_sha256 TEXT
+    hash_sha256 TEXT,
+    codigo_envio TEXT,
+    estado_envio TEXT CHECK (
+      estado_envio IN (
+        'REGISTRADO_ALMACEN',
+        'EN_TRANSITO',
+        'EN_PUNTO_ENTREGA',
+        'ENTREGADO'
+      ) OR estado_envio IS NULL
+    ),
+    historial_tracking_json TEXT
   );
 
   CREATE TABLE IF NOT EXISTS proyectos (
@@ -96,10 +106,31 @@ export const DATABASE_SCHEMA = `
     endpoint TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS decisiones_gerenciales (
+    id TEXT PRIMARY KEY NOT NULL,
+    tipo TEXT NOT NULL CHECK (
+      tipo IN (
+        'NUEVO_PROYECTO_DONACION',
+        'ABASTECIMIENTO_DESBALANCE',
+        'REDISTRIBUCION_STOCK'
+      )
+    ),
+    titulo TEXT NOT NULL,
+    detalle TEXT NOT NULL,
+    insumo_relacionado TEXT,
+    cantidad_involucrada REAL,
+    caserio_o_proyecto_destino TEXT,
+    decidido_por_nombre TEXT NOT NULL,
+    fecha_hora TEXT NOT NULL,
+    estado TEXT NOT NULL CHECK (estado = 'APROBADA')
+  );
+
   CREATE INDEX IF NOT EXISTS idx_movimientos_sync_timestamp
     ON movimientos_almacen(sync_status, timestamp);
   CREATE INDEX IF NOT EXISTS idx_fichas_sync_timestamp
     ON fichas_campo(sync_status, timestamp);
   CREATE INDEX IF NOT EXISTS idx_sync_logs_timestamp
     ON sync_logs(timestamp);
+  CREATE INDEX IF NOT EXISTS idx_decisiones_gerenciales_fecha
+    ON decisiones_gerenciales(fecha_hora DESC);
 `;

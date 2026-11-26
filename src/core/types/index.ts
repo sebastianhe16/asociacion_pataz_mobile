@@ -7,7 +7,21 @@ export type EjeProyecto =
 export type SyncStatus = 'PENDING' | 'SYNCED' | 'ERROR';
 export type TipoMovimiento = 'ENTRADA' | 'SALIDA';
 export type OrigenMovimiento = 'COMPRA' | 'DONACION';
+export type EstadoEnvio =
+  | 'REGISTRADO_ALMACEN'
+  | 'EN_TRANSITO'
+  | 'EN_PUNTO_ENTREGA'
+  | 'ENTREGADO';
+
+export interface HitoTracking {
+  estado: EstadoEnvio;
+  titulo: string;
+  descripcion: string;
+  fechaHora: string;
+  responsable: string;
+}
 export * from './ordenCompra';
+export * from './decision';
 
 export interface Almacen {
   id: string;
@@ -44,11 +58,15 @@ export interface MovimientoAlmacen {
   fotoUri: string | null;
   firmaSvgPaths: string | null;
   hashSha256: string | null;
+  codigoEnvio: string | null;
+  estadoEnvio: EstadoEnvio | null;
+  historialTrackingJson: string | null;
 }
 
 export interface WarehouseMovementRecord extends MovimientoAlmacen {
   insumoCodigo: string;
   insumoNombre: string;
+  insumoUnidad: string;
   almacenId: string;
   almacenNombre: string;
 }

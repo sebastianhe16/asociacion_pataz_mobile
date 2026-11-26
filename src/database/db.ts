@@ -2,7 +2,11 @@ import * as SQLite from 'expo-sqlite';
 import * as Crypto from 'expo-crypto';
 import type {
   Almacen,
+  AprobarDecisionGerencialInput,
+  DecisionGerencial,
   EstadoOrdenCompra,
+  EstadoEnvio,
+  HitoTracking,
   Insumo,
   NuevaOrdenCompraInput,
   OrdenCompra,
@@ -43,6 +47,8 @@ export interface RecentActivity {
   timestamp: string;
   syncStatus: SyncStatus;
   hasActa: number;
+  codigoEnvio: string | null;
+  estadoEnvio: EstadoEnvio | null;
 }
 
 export interface PassportEvidenceInput {
@@ -75,6 +81,35 @@ export interface RegisterWarehouseMovementInput {
   evidencia?: PassportEvidenceInput;
 }
 
+interface TrackingActor {
+  nombreCompleto: string;
+  roleKey: RoleKey;
+}
+
+export interface InventoryBalance extends InventoryItem {
+  cantidadSolicitada: number;
+  diferencia: number;
+  estadoBalance: 'DEFICIT' | 'EXCEDENTE' | 'EQUILIBRADO';
+}
+
+export interface DonationMovementSummary {
+  insumoId: string;
+  quantityDonated: number;
+  quantityDispatched: number;
+}
+
+export interface ShipmentStatusCounts {
+  inTransit: number;
+  delivered: number;
+}
+
+export interface PendingSyncPackage {
+  id: string;
+  timestamp: string;
+  entityType: SyncEntityType;
+  endpoint: string;
+}
+
 const almacenes = [
   { id: 'alm-lavasen', nombre: 'Lavasen', ubicacion: 'Base logística Lavasen, Pataz' },
   { id: 'alm-maranon', nombre: 'Marañón', ubicacion: 'Base logística Marañón, La Libertad' },
@@ -83,12 +118,12 @@ const almacenes = [
 
 const insumos = [
   { id: 'ins-papa-lavasen', codigo: 'AG-PAPA-325', nombre: 'Semillas de papa INIA-325', categoria: 'Agrícola', unidad: 'kg', stock: 240, minimo: 50, almacen: 'alm-lavasen' },
-  { id: 'ins-palta-lavasen', codigo: 'AG-PALTA-HASS', nombre: 'Plantones de palta Hass', categoria: 'Agrícola', unidad: 'plantón', stock: 180, minimo: 40, almacen: 'alm-lavasen' },
-  { id: 'ins-sulfato-pataz', codigo: 'SA-SULF-FER', nombre: 'Sulfato ferroso (suplemento contra anemia)', categoria: 'Salud', unidad: 'frasco', stock: 96, minimo: 30, almacen: 'alm-pataz' },
+  { id: 'ins-palta-lavasen', codigo: 'AG-PALTA-HASS', nombre: 'Plantones de palta Hass', categoria: 'Agrícola', unidad: 'plantón', stock: 75, minimo: 40, almacen: 'alm-lavasen' },
+  { id: 'ins-sulfato-pataz', codigo: 'SA-SULF-FER', nombre: 'Sulfato ferroso (suplemento contra anemia)', categoria: 'Salud', unidad: 'frasco', stock: 15, minimo: 30, almacen: 'alm-pataz' },
   { id: 'ins-kit-pataz', codigo: 'ED-KIT-ESC', nombre: 'Kit escolar básico', categoria: 'Educación', unidad: 'kit', stock: 125, minimo: 35, almacen: 'alm-pataz' },
   { id: 'ins-fertilizante-maranon', codigo: 'AG-FERT-ORG', nombre: 'Fertilizante orgánico', categoria: 'Agrícola', unidad: 'saco', stock: 72, minimo: 20, almacen: 'alm-maranon' },
   { id: 'ins-planton-queuna-maranon', codigo: 'AG-QUE-PLT', nombre: 'Plantones de queuña', categoria: 'Agrícola', unidad: 'plantón', stock: 310, minimo: 80, almacen: 'alm-maranon' },
-  { id: 'ins-botiquin-lavasen', codigo: 'SA-BOT-PRI', nombre: 'Botiquín de primeros auxilios', categoria: 'Salud', unidad: 'unidad', stock: 18, minimo: 8, almacen: 'alm-lavasen' },
+  { id: 'ins-botiquin-lavasen', codigo: 'SA-BOT-PRI', nombre: 'Botiquín de primeros auxilios', categoria: 'Salud', unidad: 'unidad', stock: 20, minimo: 8, almacen: 'alm-lavasen' },
   { id: 'ins-kit-agua-maranon', codigo: 'ED-KIT-AGU', nombre: 'Kit de herramientas para agua y saneamiento', categoria: 'Educación', unidad: 'kit', stock: 14, minimo: 5, almacen: 'alm-maranon' },
 ] as const;
 
@@ -292,9 +327,86 @@ export async function initDatabase(): Promise<void> {
       movementColumns.add(name);
     }
   }
+  const trackingColumns = [
+    ['codigo_envio', 'TEXT'],
+    ['estado_envio', 'TEXT'],
+    ['historial_tracking_json', 'TEXT'],
+  ] as const;
+  for (const [name, type] of trackingColumns) {
+    if (!movementColumns.has(name)) {
+      await database.execAsync(
+        `ALTER TABLE movimientos_almacen ADD COLUMN ${name} ${type}`,
+      );
+      movementColumns.add(name);
+    }
+  }
+  await database.execAsync(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_movimientos_codigo_envio ON movimientos_almacen(codigo_envio)',
+  );
+  await backfillShipmentTracking(database);
   await migratePurchaseOrders(database);
   await createPassportImmutabilityTriggers(database);
   await seedInitialData(database);
+}
+
+async function backfillShipmentTracking(
+  database: SQLite.SQLiteDatabase,
+): Promise<void> {
+  const legacyShipments = await database.getAllAsync<{
+    id: string;
+    timestamp: string;
+    responsable: string;
+  }>(
+    `SELECT id, timestamp, responsable
+     FROM movimientos_almacen
+     WHERE tipo = 'SALIDA' AND codigo_envio IS NULL
+     ORDER BY timestamp ASC`,
+  );
+  if (legacyShipments.length === 0) {
+    return;
+  }
+
+  await database.withTransactionAsync(async () => {
+    for (const movement of legacyShipments) {
+      const parsedYear = new Date(movement.timestamp).getUTCFullYear();
+      const year = Number.isFinite(parsedYear) ? parsedYear : new Date().getUTCFullYear();
+      const codigoEnvio = await generateShipmentCode(database, year);
+      const hito: HitoTracking = {
+        estado: 'REGISTRADO_ALMACEN',
+        titulo: 'Registrado en Almacén',
+        descripcion: 'Salida incorporada al seguimiento de envíos.',
+        fechaHora: movement.timestamp,
+        responsable: movement.responsable,
+      };
+      await database.runAsync(
+        `UPDATE movimientos_almacen
+         SET codigo_envio = ?, estado_envio = ?, historial_tracking_json = ?
+         WHERE id = ? AND codigo_envio IS NULL`,
+        codigoEnvio,
+        hito.estado,
+        JSON.stringify([hito]),
+        movement.id,
+      );
+    }
+  });
+}
+
+async function generateShipmentCode(
+  database: SQLite.SQLiteDatabase,
+  year: number,
+): Promise<string> {
+  const prefix = `SHL-${year}-`;
+  const lastCode = await database.getFirstAsync<{ sequence: number }>(
+    `SELECT COALESCE(
+      MAX(CAST(substr(codigo_envio, ?) AS INTEGER)),
+      0
+    ) AS sequence
+     FROM movimientos_almacen
+     WHERE codigo_envio LIKE ?`,
+    prefix.length + 1,
+    `${prefix}%`,
+  );
+  return `${prefix}${String((lastCode?.sequence ?? 0) + 1).padStart(3, '0')}`;
 }
 
 async function migratePurchaseOrders(database: SQLite.SQLiteDatabase): Promise<void> {
@@ -409,6 +521,35 @@ export async function seedInitialData(
       );
     }
 
+    const seedStockAdjustments = [
+      { id: 'ins-botiquin-lavasen', previous: 18, current: 20 },
+      { id: 'ins-sulfato-pataz', previous: 96, current: 15 },
+      { id: 'ins-palta-lavasen', previous: 180, current: 75 },
+    ];
+    for (const item of seedStockAdjustments) {
+      await database.runAsync(
+        `UPDATE insumos
+         SET stock_actual = ?
+         WHERE id = ? AND stock_actual = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM movimientos_almacen
+             WHERE movimientos_almacen.insumo_id = insumos.id
+           )`,
+        item.current,
+        item.id,
+        item.previous,
+      );
+    }
+    await database.runAsync(
+      `UPDATE insumos
+       SET stock_minimo = 30
+       WHERE id = 'ins-palta-lavasen' AND stock_minimo = 40
+         AND NOT EXISTS (
+           SELECT 1 FROM movimientos_almacen
+           WHERE movimientos_almacen.insumo_id = insumos.id
+         )`,
+    );
+
     for (const project of proyectos) {
       await database.runAsync(
         'INSERT OR IGNORE INTO proyectos (id, codigo, nombre, eje, caserio) VALUES (?, ?, ?, ?, ?)',
@@ -421,6 +562,22 @@ export async function seedInitialData(
     }
 
     const seededAt = new Date().toISOString();
+    const donationMovements = await database.getFirstAsync<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM movimientos_almacen WHERE insumo_id = ?',
+      'ins-palta-lavasen',
+    );
+    if ((donationMovements?.count ?? 0) === 0) {
+      await database.runAsync(
+        `INSERT OR IGNORE INTO movimientos_almacen
+          (id, tipo, origen, insumo_id, cantidad, responsable, destino_caserio,
+           timestamp, sync_status)
+         VALUES ('mov-seed-donacion-palta', 'ENTRADA', 'DONACION', ?, 75,
+           'Registro de donación institucional', NULL, ?, 'SYNCED')`,
+        'ins-palta-lavasen',
+        seededAt,
+      );
+    }
+
     const seedOrders: {
       id: string;
       codigo: string;
@@ -474,6 +631,60 @@ export async function seedInitialData(
         fechaRevision: seededAt,
         observacion: 'Aprobada para despacho según disponibilidad.',
       },
+      {
+        id: 'oc-seed-desbalance-003',
+        codigo: 'OC-2026-003',
+        proyectoId: 'proy-agua-jass',
+        proyectoNombre: 'Fortalecimiento de juntas administradoras de agua',
+        almacenId: 'alm-lavasen',
+        solicitanteId: 'pataz-monitoreo-02',
+        solicitanteNombre: 'José Luis Sánchez Vega',
+        justificacion: 'Reposición prioritaria de botiquines para brigadas comunitarias.',
+        prioridad: 'ALTA',
+        estado: 'PENDIENTE',
+        items: [
+          { insumoId: 'ins-botiquin-lavasen', nombre: 'Botiquín de primeros auxilios', cantidad: 32, unidad: 'unidad' },
+        ],
+        aprobadoPor: null,
+        fechaRevision: null,
+        observacion: null,
+      },
+      {
+        id: 'oc-seed-desbalance-004',
+        codigo: 'OC-2026-004',
+        proyectoId: 'proy-salud-anemia',
+        proyectoNombre: 'Prevención de anemia infantil',
+        almacenId: 'alm-pataz',
+        solicitanteId: 'pataz-monitoreo-02',
+        solicitanteNombre: 'José Luis Sánchez Vega',
+        justificacion: 'Cobertura de suplementación para las próximas jornadas de salud.',
+        prioridad: 'URGENTE',
+        estado: 'PENDIENTE',
+        items: [
+          { insumoId: 'ins-sulfato-pataz', nombre: 'Sulfato ferroso (suplemento contra anemia)', cantidad: 28, unidad: 'frasco' },
+        ],
+        aprobadoPor: null,
+        fechaRevision: null,
+        observacion: null,
+      },
+      {
+        id: 'oc-seed-desbalance-005',
+        codigo: 'OC-2026-005',
+        proyectoId: 'proy-agri-frutales',
+        proyectoNombre: 'Instalación de frutales altoandinos',
+        almacenId: 'alm-lavasen',
+        solicitanteId: 'pataz-monitoreo-02',
+        solicitanteNombre: 'José Luis Sánchez Vega',
+        justificacion: 'Asignación de plantones para las parcelas demostrativas.',
+        prioridad: 'NORMAL',
+        estado: 'APROBADA',
+        items: [
+          { insumoId: 'ins-palta-lavasen', nombre: 'Plantones de palta Hass', cantidad: 20, unidad: 'plantón' },
+        ],
+        aprobadoPor: 'Rosa Elena Castillo Díaz',
+        fechaRevision: seededAt,
+        observacion: 'Aprobada para asignación a las parcelas demostrativas.',
+      },
     ];
 
     for (const order of seedOrders) {
@@ -515,6 +726,83 @@ export async function getPendingRecordCount(): Promise<number> {
   );
 
   return result?.count ?? 0;
+}
+
+export async function getProjectCount(): Promise<number> {
+  const database = await getDatabase();
+  const result = await database.getFirstAsync<{ count: number }>(
+    'SELECT COUNT(*) AS count FROM proyectos',
+  );
+  return result?.count ?? 0;
+}
+
+export async function getPendingSyncPackages(limit = 20): Promise<PendingSyncPackage[]> {
+  const database = await getDatabase();
+  const [movements, fieldForms, orders] = await Promise.all([
+    database.getAllAsync<{ id: string; timestamp: string }>(
+      `SELECT id, timestamp FROM movimientos_almacen
+       WHERE sync_status IN ('PENDING', 'ERROR') ORDER BY timestamp ASC LIMIT ?`,
+      limit,
+    ),
+    database.getAllAsync<{ id: string; timestamp: string }>(
+      `SELECT id, timestamp FROM fichas_campo
+       WHERE sync_status IN ('PENDING', 'ERROR') ORDER BY timestamp ASC LIMIT ?`,
+      limit,
+    ),
+    database.getAllAsync<{ id: string; timestamp: string }>(
+      `SELECT id, fecha_actualizacion AS timestamp FROM ordenes_compra
+       WHERE sync_status = 'PENDING' ORDER BY fecha_actualizacion ASC LIMIT ?`,
+      limit,
+    ),
+  ]);
+  return [
+    ...movements.map((item) => ({
+      ...item,
+      entityType: 'MOVIMIENTO_ALMACEN' as const,
+      endpoint: '/api/v1/sisgeap/movimientos',
+    })),
+    ...fieldForms.map((item) => ({
+      ...item,
+      entityType: 'FICHA_CAMPO' as const,
+      endpoint: '/api/v1/sisgeap/fichas-campo',
+    })),
+    ...orders.map((item) => ({
+      ...item,
+      entityType: 'ORDEN_COMPRA' as const,
+      endpoint: '/api/v1/sisgeap/ordenes-compra',
+    })),
+  ].sort((first, second) => first.timestamp.localeCompare(second.timestamp))
+    .slice(0, limit);
+}
+
+export async function completeSyncPackage(item: PendingSyncPackage): Promise<void> {
+  const tableByEntity: Record<SyncEntityType, string> = {
+    MOVIMIENTO_ALMACEN: 'movimientos_almacen',
+    FICHA_CAMPO: 'fichas_campo',
+    ORDEN_COMPRA: 'ordenes_compra',
+  };
+  const database = await getDatabase();
+  const timestamp = new Date().toISOString();
+  await database.withTransactionAsync(async () => {
+    const result = await database.runAsync(
+      `UPDATE ${tableByEntity[item.entityType]} SET sync_status = 'SYNCED' WHERE id = ?`,
+      item.id,
+    );
+    if (result.changes !== 1) {
+      throw new Error('El registro de sincronización ya no existe en la base local.');
+    }
+    await database.runAsync(
+      `INSERT INTO sync_logs
+        (id, entity_type, entity_id, sync_status, message, timestamp, endpoint)
+       VALUES (?, ?, ?, 'SUCCESS', ?, ?, ?)`,
+      Crypto.randomUUID(),
+      item.entityType,
+      item.id,
+      'Paquete aceptado por el gateway simulado SISGEAP.',
+      timestamp,
+      item.endpoint,
+    );
+  });
 }
 
 export async function getSyncDashboardData(): Promise<SyncDashboardData> {
@@ -813,6 +1101,166 @@ export async function getProjectSummaries(): Promise<ProyectoCampoResumen[]> {
   );
 }
 
+interface DecisionActor {
+  nombreCompleto: string;
+  roleKey: RoleKey;
+}
+
+async function getRequestedQuantity(
+  database: SQLite.SQLiteDatabase,
+  insumoId: string,
+): Promise<number> {
+  const activeOrders = await database.getAllAsync<{ itemsJson: string }>(
+    `SELECT items_json AS itemsJson
+     FROM ordenes_compra
+     WHERE estado IN ('PENDIENTE', 'APROBADA')`,
+  );
+  return activeOrders.reduce((total, order) => (
+    total + parseOrderItems(order.itemsJson)
+      .filter((item) => item.insumoId === insumoId)
+      .reduce((itemTotal, item) => itemTotal + item.cantidad, 0)
+  ), 0);
+}
+
+export async function approveManagerialDecision(
+  input: AprobarDecisionGerencialInput,
+  actor: DecisionActor,
+): Promise<DecisionGerencial> {
+  if (actor.roleKey !== 'ADMIN') {
+    throw new Error('Se requiere perfil de Gerencia/Administración para aprobar esta decisión.');
+  }
+  const titulo = input.titulo.trim();
+  const detalle = input.detalle.trim();
+  const destino = input.caserioOProyectoDestino?.trim() ?? '';
+  if (!titulo || detalle.length < 8 || !destino) {
+    throw new Error('Completa el título, la resolución y el destino de la decisión.');
+  }
+
+  const requiresInventory = input.tipo === 'NUEVO_PROYECTO_DONACION'
+    || input.tipo === 'ABASTECIMIENTO_DESBALANCE';
+  if (
+    requiresInventory &&
+    (!input.insumoId ||
+      !input.insumoRelacionado?.trim() ||
+      !Number.isFinite(input.cantidadInvolucrada) ||
+      input.cantidadInvolucrada === null ||
+      input.cantidadInvolucrada <= 0)
+  ) {
+    throw new Error('La decisión requiere un insumo y una cantidad válida.');
+  }
+  if (input.tipo === 'NUEVO_PROYECTO_DONACION') {
+    const project = input.nuevoProyecto;
+    if (!project || project.nombre.trim().length < 4 || project.caserio.trim().length < 2) {
+      throw new Error('Completa el nombre del proyecto y el caserío de intervención.');
+    }
+  } else if (input.tipo === 'REDISTRIBUCION_STOCK') {
+    throw new Error('La resolución de redistribución aún no está habilitada.');
+  }
+
+  const database = await getDatabase();
+  const id = Crypto.randomUUID();
+  const fechaHora = new Date().toISOString();
+  const decision: DecisionGerencial = {
+    id,
+    tipo: input.tipo,
+    titulo,
+    detalle,
+    insumoRelacionado: input.insumoRelacionado,
+    cantidadInvolucrada: input.cantidadInvolucrada,
+    caserioOProyectoDestino: destino,
+    decididoPorNombre: actor.nombreCompleto,
+    fechaHora,
+    estado: 'APROBADA',
+  };
+
+  await database.withTransactionAsync(async () => {
+    if (requiresInventory && input.insumoId && input.cantidadInvolucrada !== null) {
+      const item = await database.getFirstAsync<{
+        nombre: string;
+        stockActual: number;
+        stockMinimo: number;
+      }>(
+        `SELECT nombre, stock_actual AS stockActual, stock_minimo AS stockMinimo
+         FROM insumos WHERE id = ?`,
+        input.insumoId,
+      );
+      if (!item) {
+        throw new Error('El insumo relacionado ya no existe en el inventario.');
+      }
+
+      const requested = await getRequestedQuantity(database, input.insumoId);
+      const difference = item.stockActual - requested;
+      if (input.tipo === 'NUEVO_PROYECTO_DONACION') {
+        if (difference <= item.stockMinimo * 1.5) {
+          throw new Error('El insumo ya no tiene un excedente significativo disponible.');
+        }
+        const donation = await database.getFirstAsync<{
+          donated: number;
+          dispatched: number;
+        }>(
+          `SELECT
+            SUM(CASE WHEN tipo = 'ENTRADA' AND origen = 'DONACION' THEN cantidad ELSE 0 END)
+              AS donated,
+            SUM(CASE WHEN tipo = 'SALIDA' THEN cantidad ELSE 0 END)
+              AS dispatched
+           FROM movimientos_almacen WHERE insumo_id = ?`,
+          input.insumoId,
+        );
+        const donorBalance = Math.max(
+          0,
+          (donation?.donated ?? 0) - (donation?.dispatched ?? 0),
+        );
+        if (input.cantidadInvolucrada > Math.min(difference, donorBalance)) {
+          throw new Error('La cantidad supera el excedente donado que permanece disponible.');
+        }
+
+        const project = input.nuevoProyecto;
+        if (!project) {
+          throw new Error('No se recibieron los datos del nuevo proyecto.');
+        }
+        const year = new Date(fechaHora).getUTCFullYear();
+        const prefix = `GER-${year}-`;
+        const lastCode = await database.getFirstAsync<{ sequence: number }>(
+          `SELECT COALESCE(MAX(CAST(substr(codigo, ?) AS INTEGER)), 0) AS sequence
+           FROM proyectos WHERE codigo LIKE ?`,
+          prefix.length + 1,
+          `${prefix}%`,
+        );
+        const projectId = Crypto.randomUUID();
+        await database.runAsync(
+          `INSERT INTO proyectos (id, codigo, nombre, eje, caserio)
+           VALUES (?, ?, ?, ?, ?)`,
+          projectId,
+          `${prefix}${String((lastCode?.sequence ?? 0) + 1).padStart(3, '0')}`,
+          project.nombre.trim(),
+          project.eje,
+          project.caserio.trim(),
+        );
+      } else if (difference >= 0 || input.cantidadInvolucrada > Math.abs(difference)) {
+        throw new Error('El déficit cambió; actualiza el indicador antes de aprobar la compra.');
+      }
+    }
+
+    await database.runAsync(
+      `INSERT INTO decisiones_gerenciales
+        (id, tipo, titulo, detalle, insumo_relacionado, cantidad_involucrada,
+         caserio_o_proyecto_destino, decidido_por_nombre, fecha_hora, estado)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'APROBADA')`,
+      id,
+      input.tipo,
+      titulo,
+      detalle,
+      input.insumoRelacionado,
+      input.cantidadInvolucrada,
+      destino,
+      actor.nombreCompleto,
+      fechaHora,
+    );
+  });
+
+  return decision;
+}
+
 export async function insertFichaCampo(input: NuevaFichaCampo): Promise<void> {
   const dni = input.beneficiarioDni.trim();
   const nombre = input.beneficiarioNombre.trim();
@@ -908,7 +1356,9 @@ export async function getRecentActivities(limit = 6): Promise<RecentActivity[]> 
          i.nombre || ' · ' || a.nombre AS detail,
          m.timestamp,
          m.sync_status AS syncStatus,
-         CASE WHEN m.hash_sha256 IS NOT NULL THEN 1 ELSE 0 END AS hasActa
+         CASE WHEN m.hash_sha256 IS NOT NULL THEN 1 ELSE 0 END AS hasActa,
+         m.codigo_envio AS codigoEnvio,
+         m.estado_envio AS estadoEnvio
        FROM movimientos_almacen m
        INNER JOIN insumos i ON i.id = m.insumo_id
        INNER JOIN almacenes a ON a.id = i.almacen_id
@@ -920,11 +1370,99 @@ export async function getRecentActivities(limit = 6): Promise<RecentActivity[]> 
          f.beneficiario_nombre || ' · ' || p.nombre AS detail,
          f.timestamp,
          f.sync_status AS syncStatus,
-         0 AS hasActa
+         0 AS hasActa,
+         NULL AS codigoEnvio,
+         NULL AS estadoEnvio
        FROM fichas_campo f
        INNER JOIN proyectos p ON p.id = f.proyecto_id
      )
      ORDER BY timestamp DESC
+     LIMIT ?`,
+    limit,
+  );
+}
+
+export async function getShipmentStatusCounts(): Promise<ShipmentStatusCounts> {
+  const database = await getDatabase();
+  const counts = await database.getFirstAsync<ShipmentStatusCounts>(
+    `SELECT
+      COUNT(CASE WHEN estado_envio = 'EN_TRANSITO' THEN 1 END) AS inTransit,
+      COUNT(CASE WHEN estado_envio = 'ENTREGADO' THEN 1 END) AS delivered
+     FROM movimientos_almacen`,
+  );
+  return counts ?? { inTransit: 0, delivered: 0 };
+}
+
+export async function getInTransitShipments(limit = 5): Promise<WarehouseMovementRecord[]> {
+  const database = await getDatabase();
+  return database.getAllAsync<WarehouseMovementRecord>(
+    `SELECT
+      m.id,
+      m.tipo,
+      m.origen,
+      m.insumo_id AS insumoId,
+      m.cantidad,
+      m.responsable,
+      m.destino_caserio AS destinoCaserio,
+      m.timestamp,
+      m.sync_status AS syncStatus,
+      m.receptor_nombre AS receptorNombre,
+      m.receptor_dni AS receptorDni,
+      m.receptor_cargo AS receptorCargo,
+      m.latitud,
+      m.longitud,
+      m.foto_uri AS fotoUri,
+      m.firma_svg_paths AS firmaSvgPaths,
+      m.hash_sha256 AS hashSha256,
+      m.codigo_envio AS codigoEnvio,
+      m.estado_envio AS estadoEnvio,
+      m.historial_tracking_json AS historialTrackingJson,
+      i.codigo AS insumoCodigo,
+      i.nombre AS insumoNombre,
+      i.unidad AS insumoUnidad,
+      a.id AS almacenId,
+      a.nombre AS almacenNombre
+    FROM movimientos_almacen m
+    INNER JOIN insumos i ON i.id = m.insumo_id
+    INNER JOIN almacenes a ON a.id = i.almacen_id
+    WHERE m.tipo = 'SALIDA' AND m.estado_envio = 'EN_TRANSITO'
+    ORDER BY m.timestamp DESC
+    LIMIT ?`,
+    limit,
+  );
+}
+
+export async function getDonationMovementSummaries(): Promise<DonationMovementSummary[]> {
+  const database = await getDatabase();
+  return database.getAllAsync<DonationMovementSummary>(
+    `SELECT
+      insumo_id AS insumoId,
+      SUM(CASE WHEN tipo = 'ENTRADA' AND origen = 'DONACION' THEN cantidad ELSE 0 END)
+        AS quantityDonated,
+      SUM(CASE WHEN tipo = 'SALIDA' THEN cantidad ELSE 0 END)
+        AS quantityDispatched
+     FROM movimientos_almacen
+     GROUP BY insumo_id
+     HAVING SUM(CASE WHEN tipo = 'ENTRADA' AND origen = 'DONACION' THEN cantidad ELSE 0 END) > 0`,
+  );
+}
+
+export async function getRecentManagerialDecisions(limit = 5): Promise<DecisionGerencial[]> {
+  const database = await getDatabase();
+  return database.getAllAsync<DecisionGerencial>(
+    `SELECT
+      id,
+      tipo,
+      titulo,
+      detalle,
+      insumo_relacionado AS insumoRelacionado,
+      cantidad_involucrada AS cantidadInvolucrada,
+      caserio_o_proyecto_destino AS caserioOProyectoDestino,
+      decidido_por_nombre AS decididoPorNombre,
+      fecha_hora AS fechaHora,
+      estado
+     FROM decisiones_gerenciales
+     ORDER BY fecha_hora DESC
      LIMIT ?`,
     limit,
   );
@@ -974,6 +1512,49 @@ export async function getInventoryByWarehouse(
   warehouseId: string,
 ): Promise<InventoryItem[]> {
   return getInventoryItems(warehouseId);
+}
+
+export async function getRecentWarehouseMovements(
+  warehouseId: string,
+  limit = 8,
+): Promise<WarehouseMovementRecord[]> {
+  const database = await getDatabase();
+  return database.getAllAsync<WarehouseMovementRecord>(
+    `SELECT
+      m.id,
+      m.tipo,
+      m.origen,
+      m.insumo_id AS insumoId,
+      m.cantidad,
+      m.responsable,
+      m.destino_caserio AS destinoCaserio,
+      m.timestamp,
+      m.sync_status AS syncStatus,
+      m.receptor_nombre AS receptorNombre,
+      m.receptor_dni AS receptorDni,
+      m.receptor_cargo AS receptorCargo,
+      m.latitud,
+      m.longitud,
+      m.foto_uri AS fotoUri,
+      m.firma_svg_paths AS firmaSvgPaths,
+      m.hash_sha256 AS hashSha256,
+      m.codigo_envio AS codigoEnvio,
+      m.estado_envio AS estadoEnvio,
+      m.historial_tracking_json AS historialTrackingJson,
+      i.codigo AS insumoCodigo,
+      i.nombre AS insumoNombre,
+      i.unidad AS insumoUnidad,
+      a.id AS almacenId,
+      a.nombre AS almacenNombre
+    FROM movimientos_almacen m
+    INNER JOIN insumos i ON i.id = m.insumo_id
+    INNER JOIN almacenes a ON a.id = i.almacen_id
+    WHERE i.almacen_id = ?
+    ORDER BY m.timestamp DESC
+    LIMIT ?`,
+    warehouseId,
+    limit,
+  );
 }
 
 export async function getAllInventoryItems(): Promise<InventoryItem[]> {
@@ -1065,10 +1646,11 @@ export async function registerWarehouseMovement(
     id: string;
     codigo: string;
     nombre: string;
+    unidad: string;
     almacenId: string;
     almacenNombre: string;
   }>(
-    `SELECT i.id, i.codigo, i.nombre, i.almacen_id AS almacenId,
+    `SELECT i.id, i.codigo, i.nombre, i.unidad, i.almacen_id AS almacenId,
       a.nombre AS almacenNombre
      FROM insumos i
      INNER JOIN almacenes a ON a.id = i.almacen_id
@@ -1102,6 +1684,9 @@ export async function registerWarehouseMovement(
     })
     : null;
 
+  let codigoEnvio: string | null = null;
+  let estadoEnvio: EstadoEnvio | null = null;
+  let historialTrackingJson: string | null = null;
   await database.withTransactionAsync(async () => {
     const stockUpdate = input.tipo === 'ENTRADA'
       ? await database.runAsync(
@@ -1126,12 +1711,26 @@ export async function registerWarehouseMovement(
       );
     }
 
+    if (input.tipo === 'SALIDA') {
+      codigoEnvio = await generateShipmentCode(database, new Date(timestamp).getUTCFullYear());
+      estadoEnvio = 'REGISTRADO_ALMACEN';
+      const firstMilestone: HitoTracking = {
+        estado: estadoEnvio,
+        titulo: 'Registrado en Almacén',
+        descripcion: 'Envío registrado y preparado para despacho.',
+        fechaHora: timestamp,
+        responsable,
+      };
+      historialTrackingJson = JSON.stringify([firstMilestone]);
+    }
+
     await database.runAsync(
       `INSERT INTO movimientos_almacen
         (id, tipo, origen, insumo_id, cantidad, responsable, destino_caserio, timestamp,
          sync_status, receptor_nombre, receptor_dni, receptor_cargo, latitud, longitud,
-         foto_uri, firma_svg_paths, hash_sha256)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?)`,
+         foto_uri, firma_svg_paths, hash_sha256, codigo_envio, estado_envio,
+         historial_tracking_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       input.tipo,
       input.origen,
@@ -1148,6 +1747,9 @@ export async function registerWarehouseMovement(
       fotoUri,
       firmaSvgPaths,
       hashSha256,
+      codigoEnvio,
+      estadoEnvio,
+      historialTrackingJson,
     );
   });
 
@@ -1169,8 +1771,12 @@ export async function registerWarehouseMovement(
     fotoUri,
     firmaSvgPaths,
     hashSha256,
+    codigoEnvio,
+    estadoEnvio,
+    historialTrackingJson,
     insumoCodigo: item.codigo,
     insumoNombre: item.nombre,
+    insumoUnidad: item.unidad,
     almacenId: item.almacenId,
     almacenNombre: item.almacenNombre,
   };
@@ -1199,8 +1805,12 @@ export async function getWarehouseMovementDetails(
       m.foto_uri AS fotoUri,
       m.firma_svg_paths AS firmaSvgPaths,
       m.hash_sha256 AS hashSha256,
+      m.codigo_envio AS codigoEnvio,
+      m.estado_envio AS estadoEnvio,
+      m.historial_tracking_json AS historialTrackingJson,
       i.codigo AS insumoCodigo,
       i.nombre AS insumoNombre,
+      i.unidad AS insumoUnidad,
       a.id AS almacenId,
       a.nombre AS almacenNombre
     FROM movimientos_almacen m
@@ -1210,4 +1820,120 @@ export async function getWarehouseMovementDetails(
     LIMIT 1`,
     movementId,
   );
+}
+
+const SHIPMENT_STATES: EstadoEnvio[] = [
+  'REGISTRADO_ALMACEN',
+  'EN_TRANSITO',
+  'EN_PUNTO_ENTREGA',
+  'ENTREGADO',
+];
+
+function parseTrackingHistory(json: string | null): HitoTracking[] {
+  if (!json) {
+    return [];
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    throw new Error('El historial de seguimiento guardado no es válido.');
+  }
+  if (!Array.isArray(value)) {
+    throw new Error('El historial de seguimiento guardado no es válido.');
+  }
+  return value.map((entry: unknown) => {
+    if (typeof entry !== 'object' || entry === null) {
+      throw new Error('El historial de seguimiento contiene un hito inválido.');
+    }
+    const milestone = entry as Record<string, unknown>;
+    if (
+      typeof milestone.estado !== 'string' ||
+      !SHIPMENT_STATES.includes(milestone.estado as EstadoEnvio) ||
+      typeof milestone.titulo !== 'string' ||
+      typeof milestone.descripcion !== 'string' ||
+      typeof milestone.fechaHora !== 'string' ||
+      typeof milestone.responsable !== 'string'
+    ) {
+      throw new Error('El historial de seguimiento contiene un hito inválido.');
+    }
+    return {
+      estado: milestone.estado as EstadoEnvio,
+      titulo: milestone.titulo,
+      descripcion: milestone.descripcion,
+      fechaHora: milestone.fechaHora,
+      responsable: milestone.responsable,
+    };
+  });
+}
+
+export async function advanceShipmentTracking(
+  movementId: string,
+  note: string,
+  actor: TrackingActor,
+): Promise<WarehouseMovementRecord> {
+  if (actor.roleKey !== 'ADMIN' && actor.roleKey !== 'LOGISTICA') {
+    throw new Error('Solo Administración o Logística puede actualizar el seguimiento.');
+  }
+  const normalizedNote = note.trim();
+  if (!normalizedNote) {
+    throw new Error('Agrega una nota de control antes de avanzar el envío.');
+  }
+  if (normalizedNote.length > 500) {
+    throw new Error('La nota de control no puede superar los 500 caracteres.');
+  }
+
+  const database = await getDatabase();
+  await database.withTransactionAsync(async () => {
+    const movement = await database.getFirstAsync<{
+      tipo: TipoMovimiento;
+      estadoEnvio: EstadoEnvio | null;
+      historialTrackingJson: string | null;
+    }>(
+      `SELECT tipo, estado_envio AS estadoEnvio,
+        historial_tracking_json AS historialTrackingJson
+       FROM movimientos_almacen WHERE id = ?`,
+      movementId,
+    );
+    if (!movement || movement.tipo !== 'SALIDA' || !movement.estadoEnvio) {
+      throw new Error('El movimiento no tiene un envío disponible para seguimiento.');
+    }
+    const currentIndex = SHIPMENT_STATES.indexOf(movement.estadoEnvio);
+    const nextState = SHIPMENT_STATES[currentIndex + 1];
+    if (!nextState) {
+      throw new Error('El envío ya figura como entregado.');
+    }
+    const titles: Record<EstadoEnvio, string> = {
+      REGISTRADO_ALMACEN: 'Registrado en Almacén',
+      EN_TRANSITO: 'En Tránsito',
+      EN_PUNTO_ENTREGA: 'En Punto de Entrega',
+      ENTREGADO: 'Entregado',
+    };
+    const history = parseTrackingHistory(movement.historialTrackingJson);
+    const updatedAt = new Date().toISOString();
+    const milestone: HitoTracking = {
+      estado: nextState,
+      titulo: titles[nextState],
+      descripcion: normalizedNote,
+      fechaHora: updatedAt,
+      responsable: actor.nombreCompleto,
+    };
+    const result = await database.runAsync(
+      `UPDATE movimientos_almacen
+       SET estado_envio = ?, historial_tracking_json = ?
+       WHERE id = ? AND estado_envio = ?`,
+      nextState,
+      JSON.stringify([...history, milestone]),
+      movementId,
+      movement.estadoEnvio,
+    );
+    if (result.changes !== 1) {
+      throw new Error('El seguimiento cambió en otro proceso. Vuelve a cargar el envío.');
+    }
+  });
+  const updatedMovement = await getWarehouseMovementDetails(movementId);
+  if (!updatedMovement) {
+    throw new Error('No se pudo volver a cargar el envío actualizado.');
+  }
+  return updatedMovement;
 }

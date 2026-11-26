@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   ActivityIndicator,
   Pressable,
@@ -81,7 +82,8 @@ export default function ProyectosCampoScreen() {
     }
   }, []);
 
-  useEffect(() => {
+  useFocusEffect(
+    useCallback(() => {
     let active = true;
 
     getProjectSummaries()
@@ -99,7 +101,8 @@ export default function ProyectosCampoScreen() {
     return () => {
       active = false;
     };
-  }, []);
+    }, []),
+  );
 
   useEffect(() => {
     if (!toastVisible) {

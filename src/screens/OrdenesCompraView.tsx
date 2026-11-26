@@ -37,12 +37,27 @@ const dateFormatter = new Intl.DateTimeFormat('es-PE', {
   minute: '2-digit',
 });
 
+export interface DeficitOrderPrefill {
+  insumoId: string;
+  cantidad: number;
+}
+
+interface OrdenesCompraViewProps {
+  deficitPrefill: DeficitOrderPrefill | null;
+  onDeficitPrefillConsumed: () => void;
+  onOrdersChanged: () => void;
+}
+
 function formatDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : dateFormatter.format(date);
 }
 
-export default function OrdenesCompraView() {
+export default function OrdenesCompraView({
+  deficitPrefill,
+  onDeficitPrefillConsumed,
+  onOrdersChanged,
+}: OrdenesCompraViewProps) {
   const { user } = useAuth();
   const { refreshPendingCount } = useSyncStatus();
   const [orders, setOrders] = useState<OrdenCompra[]>([]);
@@ -107,6 +122,7 @@ export default function OrdenesCompraView() {
     await reviewPurchaseOrder(selectedOrder.id, decision, observation, user);
     setSelectedOrder(null);
     await Promise.all([loadOrders(), refreshPendingCount()]);
+    onOrdersChanged();
   }
 
   async function handleAttend() {
@@ -116,11 +132,14 @@ export default function OrdenesCompraView() {
     await markPurchaseOrderAttended(selectedOrder.id, user);
     setSelectedOrder(null);
     await Promise.all([loadOrders(), refreshPendingCount()]);
+    onOrdersChanged();
   }
 
   async function handleCreated() {
     setIsCreating(false);
     await Promise.all([loadOrders(), refreshPendingCount()]);
+    onDeficitPrefillConsumed();
+    onOrdersChanged();
   }
 
   return (
@@ -148,7 +167,10 @@ export default function OrdenesCompraView() {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Crear nueva orden de compra"
-          onPress={() => setIsCreating(true)}
+          onPress={() => {
+            onDeficitPrefillConsumed();
+            setIsCreating(true);
+          }}
           style={styles.createButton}
         >
           <MaterialCommunityIcons name="plus" size={20} color={colors.onPrimary} />
@@ -226,9 +248,13 @@ export default function OrdenesCompraView() {
 
       {user && (
         <NuevaOrdenCompraModal
-          visible={isCreating}
+          visible={isCreating || deficitPrefill !== null}
           user={user}
-          onClose={() => setIsCreating(false)}
+          deficitPrefill={deficitPrefill}
+          onClose={() => {
+            setIsCreating(false);
+            onDeficitPrefillConsumed();
+          }}
           onCreated={() => void handleCreated()}
         />
       )}

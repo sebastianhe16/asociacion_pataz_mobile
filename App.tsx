@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useState, type PropsWithChildren } from 'react';
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -37,55 +37,71 @@ export default function App() {
 
   if (startupError) {
     return (
-      <SafeAreaProvider>
-        <View style={styles.centered}>
-          <Text style={styles.title}>No se pudo iniciar Pataz Móvil</Text>
-          <Text style={styles.message}>{startupError}</Text>
-          <Pressable
-            accessibilityRole="button"
-            style={styles.retryButton}
-            onPress={() => {
-              setStartupError(null);
-              setDatabaseReady(false);
-              initDatabase()
-                .then(() => setDatabaseReady(true))
-                .catch((error: unknown) => {
-                  setStartupError(
-                    error instanceof Error ? error.message : 'No se pudo inicializar la base local.',
-                  );
-                });
-            }}
-          >
-            <Text style={styles.retryLabel}>Reintentar</Text>
-          </Pressable>
-        </View>
-      </SafeAreaProvider>
+      <ResponsiveViewport>
+        <SafeAreaProvider>
+          <View style={styles.centered}>
+            <Text style={styles.title}>No se pudo iniciar Pataz Móvil</Text>
+            <Text style={styles.message}>{startupError}</Text>
+            <Pressable
+              accessibilityRole="button"
+              style={styles.retryButton}
+              onPress={() => {
+                setStartupError(null);
+                setDatabaseReady(false);
+                initDatabase()
+                  .then(() => setDatabaseReady(true))
+                  .catch((error: unknown) => {
+                    setStartupError(
+                      error instanceof Error ? error.message : 'No se pudo inicializar la base local.',
+                    );
+                  });
+              }}
+            >
+              <Text style={styles.retryLabel}>Reintentar</Text>
+            </Pressable>
+          </View>
+        </SafeAreaProvider>
+      </ResponsiveViewport>
     );
   }
 
   if (!databaseReady) {
     return (
-      <SafeAreaProvider>
-        <View style={styles.centered}>
-          <ActivityIndicator size="large" color={colors.primary} />
-          <Text style={styles.message}>Preparando el trabajo sin conexión…</Text>
-        </View>
-      </SafeAreaProvider>
+      <ResponsiveViewport>
+        <SafeAreaProvider>
+          <View style={styles.centered}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={styles.message}>Preparando el trabajo sin conexión…</Text>
+          </View>
+        </SafeAreaProvider>
+      </ResponsiveViewport>
     );
   }
 
   return (
-    <SafeAreaProvider>
-      <AuthProvider>
-        <NetworkProvider>
-          <SyncProvider>
-            <StatusBar style="dark" />
-            <RootNavigator />
-          </SyncProvider>
-        </NetworkProvider>
-      </AuthProvider>
-    </SafeAreaProvider>
+    <ResponsiveViewport>
+      <SafeAreaProvider>
+        <AuthProvider>
+          <NetworkProvider>
+            <SyncProvider>
+              <StatusBar style="dark" />
+              <RootNavigator />
+            </SyncProvider>
+          </NetworkProvider>
+        </AuthProvider>
+      </SafeAreaProvider>
+    </ResponsiveViewport>
   );
+}
+
+function ResponsiveViewport({ children }: PropsWithChildren) {
+  return Platform.OS === 'web'
+    ? (
+      <View style={styles.webViewport}>
+        <View style={styles.webApp}>{children}</View>
+      </View>
+    )
+    : <View style={styles.mobileViewport}>{children}</View>;
 }
 
 function RootNavigator() {
@@ -106,6 +122,28 @@ function RootNavigator() {
 }
 
 const styles = StyleSheet.create({
+  mobileViewport: {
+    flex: 1,
+  },
+  webViewport: {
+    flex: 1,
+    minHeight: '100vh',
+    paddingVertical: 24,
+    backgroundColor: '#e9ecef',
+  },
+  webApp: {
+    flex: 1,
+    width: '100%',
+    maxWidth: 540,
+    alignSelf: 'center',
+    overflow: 'hidden',
+    backgroundColor: colors.background,
+    shadowColor: '#16231d',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.12,
+    shadowRadius: 22,
+    elevation: 8,
+  },
   centered: {
     flex: 1,
     backgroundColor: colors.background,
