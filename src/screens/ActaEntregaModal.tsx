@@ -234,6 +234,54 @@ export default function ActaEntregaModal({
               </View>
 
               <View style={styles.card}>
+                <Text style={styles.sectionTitle}>Conformidad de Recepción en Destino</Text>
+                {movement.estadoEnvio !== 'ENTREGADO' ? (
+                  <Text style={styles.mutedText}>
+                    En ruta / Pendiente de verificación final en destino
+                  </Text>
+                ) : (
+                  <>
+                    <Text style={[
+                      styles.conformityBadge,
+                      movement.estadoConformidadEntrega === 'COMPLETA'
+                        ? styles.conformityComplete
+                        : movement.estadoConformidadEntrega === 'PARCIAL_CON_OBSERVACION'
+                          ? styles.conformityPartial
+                          : styles.conformityPending,
+                    ]}>
+                      {movement.estadoConformidadEntrega === 'COMPLETA'
+                        ? 'COMPLETA'
+                        : movement.estadoConformidadEntrega === 'PARCIAL_CON_OBSERVACION'
+                          ? 'PARCIAL CON OBSERVACIÓN'
+                          : 'PENDIENTE DE VERIFICACIÓN'}
+                    </Text>
+                    <View style={styles.receiptComparison}>
+                      <PassportField
+                        label="Cantidad Despachada"
+                        value={`${movement.cantidad} ${movement.insumoUnidad}`}
+                      />
+                      <PassportField
+                        label="Cantidad Recibida"
+                        value={movement.cantidadEntregada === null
+                          ? 'No verificada'
+                          : `${movement.cantidadEntregada} ${movement.insumoUnidad}`}
+                      />
+                      <PassportField
+                        label="Diferencia / Faltante"
+                        value={`${movement.diferenciaEntrega} ${movement.insumoUnidad}`}
+                      />
+                    </View>
+                    {movement.motivoDiferencia && (
+                      <PassportField label="Motivo" value={movement.motivoDiferencia} />
+                    )}
+                    {movement.observacionEntrega && (
+                      <PassportField label="Observación" value={movement.observacionEntrega} />
+                    )}
+                  </>
+                )}
+              </View>
+
+              <View style={styles.card}>
                 <Text style={styles.sectionTitle}>Receptor</Text>
                 <View style={styles.fieldGrid}>
                   <PassportField label="Nombre completo" value={movement.receptorNombre ?? 'No registrado'} />
@@ -440,6 +488,23 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: spacing.md,
   },
+  receiptComparison: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  conformityBadge: {
+    alignSelf: 'flex-start',
+    overflow: 'hidden',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  conformityComplete: { color: colors.online, backgroundColor: colors.accentLight },
+  conformityPartial: { color: colors.offline, backgroundColor: colors.warningBackground },
+  conformityPending: { color: colors.textSecondary, backgroundColor: colors.background },
   field: {
     flexBasis: '45%',
     flexGrow: 1,

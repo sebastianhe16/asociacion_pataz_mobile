@@ -4,10 +4,12 @@ import type {
   Almacen,
   AprobarDecisionGerencialInput,
   DecisionGerencial,
+  EstadoConformidadEntrega,
   EstadoOrdenCompra,
   EstadoEnvio,
   HitoTracking,
   Insumo,
+  MotivoDiferenciaEntrega,
   NuevaOrdenCompraInput,
   OrdenCompra,
   OrdenCompraItem,
@@ -49,6 +51,8 @@ export interface RecentActivity {
   hasActa: number;
   codigoEnvio: string | null;
   estadoEnvio: EstadoEnvio | null;
+  estadoConformidadEntrega: EstadoConformidadEntrega | null;
+  diferenciaEntrega: number | null;
 }
 
 export interface PassportEvidenceInput {
@@ -84,6 +88,12 @@ export interface RegisterWarehouseMovementInput {
 interface TrackingActor {
   nombreCompleto: string;
   roleKey: RoleKey;
+}
+
+export interface DeliveryVerificationInput {
+  cantidadEntregada: number;
+  motivoDiferencia: MotivoDiferenciaEntrega | null;
+  observacionEntrega: string | null;
 }
 
 export interface InventoryBalance extends InventoryItem {
@@ -336,6 +346,27 @@ export async function initDatabase(): Promise<void> {
     if (!movementColumns.has(name)) {
       await database.execAsync(
         `ALTER TABLE movimientos_almacen ADD COLUMN ${name} ${type}`,
+      );
+      movementColumns.add(name);
+    }
+  }
+  const deliveryColumns = [
+    ['cantidad_entregada', 'REAL'],
+    ['diferencia_entrega', 'REAL NOT NULL DEFAULT 0'],
+    [
+      'estado_conformidad_entrega',
+      "TEXT NOT NULL DEFAULT 'PENDIENTE' CHECK (estado_conformidad_entrega IN ('PENDIENTE', 'COMPLETA', 'PARCIAL_CON_OBSERVACION'))",
+    ],
+    [
+      'motivo_diferencia',
+      `TEXT CHECK (motivo_diferencia IN ('Daño en ruta / clima', 'Entrega parcial / fraccionada', 'Merma operativa', 'Extravío en tránsito', 'Otro') OR motivo_diferencia IS NULL)`,
+    ],
+    ['observacion_entrega', 'TEXT'],
+  ] as const;
+  for (const [name, definition] of deliveryColumns) {
+    if (!movementColumns.has(name)) {
+      await database.execAsync(
+        `ALTER TABLE movimientos_almacen ADD COLUMN ${name} ${definition}`,
       );
       movementColumns.add(name);
     }
@@ -1358,7 +1389,9 @@ export async function getRecentActivities(limit = 6): Promise<RecentActivity[]> 
          m.sync_status AS syncStatus,
          CASE WHEN m.hash_sha256 IS NOT NULL THEN 1 ELSE 0 END AS hasActa,
          m.codigo_envio AS codigoEnvio,
-         m.estado_envio AS estadoEnvio
+         m.estado_envio AS estadoEnvio,
+         m.estado_conformidad_entrega AS estadoConformidadEntrega,
+         m.diferencia_entrega AS diferenciaEntrega
        FROM movimientos_almacen m
        INNER JOIN insumos i ON i.id = m.insumo_id
        INNER JOIN almacenes a ON a.id = i.almacen_id
@@ -1372,7 +1405,9 @@ export async function getRecentActivities(limit = 6): Promise<RecentActivity[]> 
          f.sync_status AS syncStatus,
          0 AS hasActa,
          NULL AS codigoEnvio,
-         NULL AS estadoEnvio
+         NULL AS estadoEnvio,
+         NULL AS estadoConformidadEntrega,
+         NULL AS diferenciaEntrega
        FROM fichas_campo f
        INNER JOIN proyectos p ON p.id = f.proyecto_id
      )
@@ -1417,6 +1452,11 @@ export async function getInTransitShipments(limit = 5): Promise<WarehouseMovemen
       m.codigo_envio AS codigoEnvio,
       m.estado_envio AS estadoEnvio,
       m.historial_tracking_json AS historialTrackingJson,
+      m.cantidad_entregada AS cantidadEntregada,
+      m.diferencia_entrega AS diferenciaEntrega,
+      m.estado_conformidad_entrega AS estadoConformidadEntrega,
+      m.motivo_diferencia AS motivoDiferencia,
+      m.observacion_entrega AS observacionEntrega,
       i.codigo AS insumoCodigo,
       i.nombre AS insumoNombre,
       i.unidad AS insumoUnidad,
@@ -1426,6 +1466,53 @@ export async function getInTransitShipments(limit = 5): Promise<WarehouseMovemen
     INNER JOIN insumos i ON i.id = m.insumo_id
     INNER JOIN almacenes a ON a.id = i.almacen_id
     WHERE m.tipo = 'SALIDA' AND m.estado_envio = 'EN_TRANSITO'
+    ORDER BY m.timestamp DESC
+    LIMIT ?`,
+    limit,
+  );
+}
+
+export async function getIncompleteDeliveryShipments(
+  limit = 5,
+): Promise<WarehouseMovementRecord[]> {
+  const database = await getDatabase();
+  return database.getAllAsync<WarehouseMovementRecord>(
+    `SELECT
+      m.id,
+      m.tipo,
+      m.origen,
+      m.insumo_id AS insumoId,
+      m.cantidad,
+      m.responsable,
+      m.destino_caserio AS destinoCaserio,
+      m.timestamp,
+      m.sync_status AS syncStatus,
+      m.receptor_nombre AS receptorNombre,
+      m.receptor_dni AS receptorDni,
+      m.receptor_cargo AS receptorCargo,
+      m.latitud,
+      m.longitud,
+      m.foto_uri AS fotoUri,
+      m.firma_svg_paths AS firmaSvgPaths,
+      m.hash_sha256 AS hashSha256,
+      m.codigo_envio AS codigoEnvio,
+      m.estado_envio AS estadoEnvio,
+      m.historial_tracking_json AS historialTrackingJson,
+      m.cantidad_entregada AS cantidadEntregada,
+      m.diferencia_entrega AS diferenciaEntrega,
+      m.estado_conformidad_entrega AS estadoConformidadEntrega,
+      m.motivo_diferencia AS motivoDiferencia,
+      m.observacion_entrega AS observacionEntrega,
+      i.codigo AS insumoCodigo,
+      i.nombre AS insumoNombre,
+      i.unidad AS insumoUnidad,
+      a.id AS almacenId,
+      a.nombre AS almacenNombre
+    FROM movimientos_almacen m
+    INNER JOIN insumos i ON i.id = m.insumo_id
+    INNER JOIN almacenes a ON a.id = i.almacen_id
+    WHERE m.tipo = 'SALIDA'
+      AND m.estado_conformidad_entrega = 'PARCIAL_CON_OBSERVACION'
     ORDER BY m.timestamp DESC
     LIMIT ?`,
     limit,
@@ -1541,6 +1628,11 @@ export async function getRecentWarehouseMovements(
       m.codigo_envio AS codigoEnvio,
       m.estado_envio AS estadoEnvio,
       m.historial_tracking_json AS historialTrackingJson,
+      m.cantidad_entregada AS cantidadEntregada,
+      m.diferencia_entrega AS diferenciaEntrega,
+      m.estado_conformidad_entrega AS estadoConformidadEntrega,
+      m.motivo_diferencia AS motivoDiferencia,
+      m.observacion_entrega AS observacionEntrega,
       i.codigo AS insumoCodigo,
       i.nombre AS insumoNombre,
       i.unidad AS insumoUnidad,
@@ -1774,6 +1866,11 @@ export async function registerWarehouseMovement(
     codigoEnvio,
     estadoEnvio,
     historialTrackingJson,
+    cantidadEntregada: null,
+    diferenciaEntrega: 0,
+    estadoConformidadEntrega: 'PENDIENTE',
+    motivoDiferencia: null,
+    observacionEntrega: null,
     insumoCodigo: item.codigo,
     insumoNombre: item.nombre,
     insumoUnidad: item.unidad,
@@ -1808,6 +1905,11 @@ export async function getWarehouseMovementDetails(
       m.codigo_envio AS codigoEnvio,
       m.estado_envio AS estadoEnvio,
       m.historial_tracking_json AS historialTrackingJson,
+      m.cantidad_entregada AS cantidadEntregada,
+      m.diferencia_entrega AS diferenciaEntrega,
+      m.estado_conformidad_entrega AS estadoConformidadEntrega,
+      m.motivo_diferencia AS motivoDiferencia,
+      m.observacion_entrega AS observacionEntrega,
       i.codigo AS insumoCodigo,
       i.nombre AS insumoNombre,
       i.unidad AS insumoUnidad,
@@ -1871,26 +1973,20 @@ export async function advanceShipmentTracking(
   movementId: string,
   note: string,
   actor: TrackingActor,
+  delivery?: DeliveryVerificationInput,
 ): Promise<WarehouseMovementRecord> {
   if (actor.roleKey !== 'ADMIN' && actor.roleKey !== 'LOGISTICA') {
     throw new Error('Solo Administración o Logística puede actualizar el seguimiento.');
   }
-  const normalizedNote = note.trim();
-  if (!normalizedNote) {
-    throw new Error('Agrega una nota de control antes de avanzar el envío.');
-  }
-  if (normalizedNote.length > 500) {
-    throw new Error('La nota de control no puede superar los 500 caracteres.');
-  }
-
   const database = await getDatabase();
   await database.withTransactionAsync(async () => {
     const movement = await database.getFirstAsync<{
       tipo: TipoMovimiento;
+      cantidad: number;
       estadoEnvio: EstadoEnvio | null;
       historialTrackingJson: string | null;
     }>(
-      `SELECT tipo, estado_envio AS estadoEnvio,
+      `SELECT tipo, cantidad, estado_envio AS estadoEnvio,
         historial_tracking_json AS historialTrackingJson
        FROM movimientos_almacen WHERE id = ?`,
       movementId,
@@ -1903,6 +1999,66 @@ export async function advanceShipmentTracking(
     if (!nextState) {
       throw new Error('El envío ya figura como entregado.');
     }
+    const isFinalDelivery = nextState === 'ENTREGADO';
+    const normalizedNote = note.trim();
+    if (!isFinalDelivery && !normalizedNote) {
+      throw new Error('Agrega una nota de control antes de avanzar el envío.');
+    }
+    if (normalizedNote.length > 500) {
+      throw new Error('La nota de control no puede superar los 500 caracteres.');
+    }
+    if (isFinalDelivery && !delivery) {
+      throw new Error('Verifica la cantidad recibida antes de confirmar la entrega.');
+    }
+    if (!isFinalDelivery && delivery) {
+      throw new Error('La verificación de recepción solo corresponde a la etapa de entrega final.');
+    }
+
+    let deliveryDescription = normalizedNote;
+    let deliveredAmount: number | null = null;
+    let deliveryDifference = 0;
+    let deliveryStatus: EstadoConformidadEntrega | null = null;
+    let differenceReason: MotivoDiferenciaEntrega | null = null;
+    let deliveryObservation: string | null = null;
+    if (isFinalDelivery && delivery) {
+      deliveredAmount = delivery.cantidadEntregada;
+      if (
+        !Number.isFinite(deliveredAmount)
+        || deliveredAmount < 0
+        || deliveredAmount > movement.cantidad
+      ) {
+        throw new Error('La cantidad recibida debe estar entre cero y la cantidad despachada.');
+      }
+      deliveryDifference = deliveredAmount - movement.cantidad;
+      if (deliveryDifference === 0) {
+        deliveryStatus = 'COMPLETA';
+        deliveryDescription =
+          `Entrega completa verificada: ${deliveredAmount}/${movement.cantidad} unidades recibidas conformes`;
+      } else {
+        const validReasons: MotivoDiferenciaEntrega[] = [
+          'Daño en ruta / clima',
+          'Entrega parcial / fraccionada',
+          'Merma operativa',
+          'Extravío en tránsito',
+          'Otro',
+        ];
+        differenceReason = delivery.motivoDiferencia;
+        deliveryObservation = delivery.observacionEntrega?.trim() ?? '';
+        if (!differenceReason || !validReasons.includes(differenceReason)) {
+          throw new Error('Selecciona el motivo de la diferencia de entrega.');
+        }
+        if (!deliveryObservation) {
+          throw new Error('Agrega una observación para documentar la entrega incompleta.');
+        }
+        if (deliveryObservation.length > 1000) {
+          throw new Error('La observación de entrega no puede superar los 1000 caracteres.');
+        }
+        deliveryStatus = 'PARCIAL_CON_OBSERVACION';
+        deliveryDescription =
+          `Entrega parcial verificada: ${deliveredAmount}/${movement.cantidad} unidades recibidas (Faltante: ${deliveryDifference} und. · Motivo: ${differenceReason}) · Observación: ${deliveryObservation}`;
+      }
+    }
+
     const titles: Record<EstadoEnvio, string> = {
       REGISTRADO_ALMACEN: 'Registrado en Almacén',
       EN_TRANSITO: 'En Tránsito',
@@ -1914,19 +2070,36 @@ export async function advanceShipmentTracking(
     const milestone: HitoTracking = {
       estado: nextState,
       titulo: titles[nextState],
-      descripcion: normalizedNote,
+      descripcion: deliveryDescription,
       fechaHora: updatedAt,
       responsable: actor.nombreCompleto,
     };
-    const result = await database.runAsync(
-      `UPDATE movimientos_almacen
-       SET estado_envio = ?, historial_tracking_json = ?
-       WHERE id = ? AND estado_envio = ?`,
-      nextState,
-      JSON.stringify([...history, milestone]),
-      movementId,
-      movement.estadoEnvio,
-    );
+    const result = isFinalDelivery
+      ? await database.runAsync(
+        `UPDATE movimientos_almacen
+         SET estado_envio = ?, historial_tracking_json = ?, sync_status = 'PENDING',
+             cantidad_entregada = ?, diferencia_entrega = ?,
+             estado_conformidad_entrega = ?, motivo_diferencia = ?, observacion_entrega = ?
+         WHERE id = ? AND estado_envio = ?`,
+        nextState,
+        JSON.stringify([...history, milestone]),
+        deliveredAmount,
+        deliveryDifference,
+        deliveryStatus,
+        differenceReason,
+        deliveryObservation,
+        movementId,
+        movement.estadoEnvio,
+      )
+      : await database.runAsync(
+        `UPDATE movimientos_almacen
+         SET estado_envio = ?, historial_tracking_json = ?, sync_status = 'PENDING'
+         WHERE id = ? AND estado_envio = ?`,
+        nextState,
+        JSON.stringify([...history, milestone]),
+        movementId,
+        movement.estadoEnvio,
+      );
     if (result.changes !== 1) {
       throw new Error('El seguimiento cambió en otro proceso. Vuelve a cargar el envío.');
     }

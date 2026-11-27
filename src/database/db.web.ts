@@ -3,11 +3,13 @@ import type {
   Almacen,
   AprobarDecisionGerencialInput,
   DecisionGerencial,
+  EstadoConformidadEntrega,
   EstadoEnvio,
   EstadoOrdenCompra,
   FichaCampo,
   HitoTracking,
   Insumo,
+  MotivoDiferenciaEntrega,
   NuevaFichaCampo,
   NuevaOrdenCompraInput,
   OrdenCompra,
@@ -54,6 +56,8 @@ export interface RecentActivity {
   hasActa: number;
   codigoEnvio: string | null;
   estadoEnvio: EstadoEnvio | null;
+  estadoConformidadEntrega: EstadoConformidadEntrega | null;
+  diferenciaEntrega: number | null;
 }
 
 export interface PassportEvidenceInput {
@@ -125,6 +129,12 @@ interface DecisionActor {
 interface TrackingActor {
   nombreCompleto: string;
   roleKey: RoleKey;
+}
+
+export interface DeliveryVerificationInput {
+  cantidadEntregada: number;
+  motivoDiferencia: MotivoDiferenciaEntrega | null;
+  observacionEntrega: string | null;
 }
 
 let stateCache: BrowserDatabaseState | null = null;
@@ -224,7 +234,17 @@ function readStoredState(): BrowserDatabaseState | null {
   ) {
     throw new Error('Los datos locales del navegador tienen una estructura no compatible.');
   }
-  return parsed as BrowserDatabaseState;
+  const storedState = parsed as BrowserDatabaseState;
+  storedState.movimientos = storedState.movimientos.map((movement) => ({
+    ...movement,
+    cantidadEntregada: movement.cantidadEntregada ?? null,
+    diferenciaEntrega: Number.isFinite(movement.diferenciaEntrega) ? movement.diferenciaEntrega : 0,
+    estadoConformidadEntrega: movement.estadoConformidadEntrega
+      ?? 'PENDIENTE',
+    motivoDiferencia: movement.motivoDiferencia ?? null,
+    observacionEntrega: movement.observacionEntrega ?? null,
+  }));
+  return storedState;
 }
 
 function getState(): BrowserDatabaseState {
@@ -359,6 +379,11 @@ export async function seedInitialData(): Promise<void> {
         codigoEnvio: null,
         estadoEnvio: null,
         historialTrackingJson: null,
+        cantidadEntregada: null,
+        diferenciaEntrega: 0,
+        estadoConformidadEntrega: 'PENDIENTE',
+        motivoDiferencia: null,
+        observacionEntrega: null,
       }, item));
     }
   }
@@ -847,6 +872,8 @@ export async function getRecentActivities(limit = 6): Promise<RecentActivity[]> 
     hasActa: movement.hashSha256 ? 1 : 0,
     codigoEnvio: movement.codigoEnvio,
     estadoEnvio: movement.estadoEnvio,
+    estadoConformidadEntrega: movement.estadoConformidadEntrega,
+    diferenciaEntrega: movement.diferenciaEntrega,
   }));
   const fieldForms = state.fichas.flatMap((form) => {
     const project = getProject(form.proyectoId);
@@ -860,6 +887,8 @@ export async function getRecentActivities(limit = 6): Promise<RecentActivity[]> 
       hasActa: 0,
       codigoEnvio: null,
       estadoEnvio: null,
+      estadoConformidadEntrega: null,
+      diferenciaEntrega: null,
     }] : [];
   });
   return [...movements, ...fieldForms]
@@ -878,6 +907,17 @@ export async function getShipmentStatusCounts(): Promise<ShipmentStatusCounts> {
 export async function getInTransitShipments(limit = 5): Promise<WarehouseMovementRecord[]> {
   return getState().movimientos
     .filter((item) => item.tipo === 'SALIDA' && item.estadoEnvio === 'EN_TRANSITO')
+    .slice()
+    .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+    .slice(0, limit);
+}
+
+export async function getIncompleteDeliveryShipments(
+  limit = 100,
+): Promise<WarehouseMovementRecord[]> {
+  return getState().movimientos
+    .filter((movement) => movement.tipo === 'SALIDA'
+      && movement.estadoConformidadEntrega === 'PARCIAL_CON_OBSERVACION')
     .slice()
     .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
     .slice(0, limit);
@@ -1054,6 +1094,11 @@ export async function registerWarehouseMovement(
     codigoEnvio,
     estadoEnvio,
     historialTrackingJson,
+    cantidadEntregada: null,
+    diferenciaEntrega: 0,
+    estadoConformidadEntrega: 'PENDIENTE',
+    motivoDiferencia: null,
+    observacionEntrega: null,
   }, item);
   item.stockActual = newStock;
   state.movimientos.unshift(record);
@@ -1071,16 +1116,10 @@ export async function advanceShipmentTracking(
   movementId: string,
   note: string,
   actor: TrackingActor,
+  delivery?: DeliveryVerificationInput,
 ): Promise<WarehouseMovementRecord> {
   if (actor.roleKey !== 'ADMIN' && actor.roleKey !== 'LOGISTICA') {
     throw new Error('Solo Administración o Logística puede actualizar el seguimiento.');
-  }
-  const normalizedNote = note.trim();
-  if (!normalizedNote) {
-    throw new Error('Agrega una nota de control antes de avanzar el envío.');
-  }
-  if (normalizedNote.length > 500) {
-    throw new Error('La nota de control no puede superar los 500 caracteres.');
   }
   const movement = getMovement(movementId);
   if (!movement || movement.tipo !== 'SALIDA' || !movement.estadoEnvio) {
@@ -1090,6 +1129,65 @@ export async function advanceShipmentTracking(
   const nextState = SHIPMENT_STATES[currentIndex + 1];
   if (!nextState) {
     throw new Error('El envío ya figura como entregado.');
+  }
+  const isFinalDelivery = nextState === 'ENTREGADO';
+  const normalizedNote = note.trim();
+  if (!isFinalDelivery && !normalizedNote) {
+    throw new Error('Agrega una nota de control antes de avanzar el envío.');
+  }
+  if (normalizedNote.length > 500) {
+    throw new Error('La nota de control no puede superar los 500 caracteres.');
+  }
+  if (isFinalDelivery && !delivery) {
+    throw new Error('Verifica la cantidad recibida antes de confirmar la entrega.');
+  }
+  if (!isFinalDelivery && delivery) {
+    throw new Error('La verificación de recepción solo corresponde a la etapa de entrega final.');
+  }
+  let deliveryDescription = normalizedNote;
+  let deliveredAmount: number | null = null;
+  let deliveryDifference = 0;
+  let deliveryStatus: EstadoConformidadEntrega | null = null;
+  let deliveryReason: MotivoDiferenciaEntrega | null = null;
+  let deliveryObservation: string | null = null;
+  if (isFinalDelivery && delivery) {
+    deliveredAmount = delivery.cantidadEntregada;
+    if (
+      !Number.isFinite(deliveredAmount)
+      || deliveredAmount < 0
+      || deliveredAmount > movement.cantidad
+    ) {
+      throw new Error('La cantidad recibida debe estar entre cero y la cantidad despachada.');
+    }
+    deliveryDifference = deliveredAmount - movement.cantidad;
+    if (deliveryDifference === 0) {
+      deliveryStatus = 'COMPLETA';
+      deliveryDescription =
+        `Entrega completa verificada: ${deliveredAmount}/${movement.cantidad} unidades recibidas conformes`;
+    } else {
+      const validReasons: MotivoDiferenciaEntrega[] = [
+        'Daño en ruta / clima',
+        'Entrega parcial / fraccionada',
+        'Merma operativa',
+        'Extravío en tránsito',
+        'Otro',
+      ];
+      const observation = delivery.observacionEntrega?.trim() ?? '';
+      if (!delivery.motivoDiferencia || !validReasons.includes(delivery.motivoDiferencia)) {
+        throw new Error('Selecciona el motivo de la diferencia de entrega.');
+      }
+      if (!observation) {
+        throw new Error('Agrega una observación para documentar la entrega incompleta.');
+      }
+      if (observation.length > 1000) {
+        throw new Error('La observación de entrega no puede superar los 1000 caracteres.');
+      }
+      deliveryStatus = 'PARCIAL_CON_OBSERVACION';
+      deliveryReason = delivery.motivoDiferencia;
+      deliveryObservation = observation;
+      deliveryDescription =
+        `Entrega parcial verificada: ${deliveredAmount}/${movement.cantidad} unidades recibidas (Faltante: ${deliveryDifference} und. · Motivo: ${delivery.motivoDiferencia}) · Observación: ${observation}`;
+    }
   }
   let history: HitoTracking[] = [];
   if (movement.historialTrackingJson) {
@@ -1119,10 +1217,18 @@ export async function advanceShipmentTracking(
   };
   const updatedAt = new Date().toISOString();
   movement.estadoEnvio = nextState;
+  movement.syncStatus = 'PENDING';
+  if (isFinalDelivery) {
+    movement.cantidadEntregada = deliveredAmount;
+    movement.diferenciaEntrega = deliveryDifference;
+    movement.estadoConformidadEntrega = deliveryStatus ?? 'PENDIENTE';
+    movement.motivoDiferencia = deliveryReason;
+    movement.observacionEntrega = deliveryObservation;
+  }
   movement.historialTrackingJson = JSON.stringify([...history, {
     estado: nextState,
     titulo: titles[nextState],
-    descripcion: normalizedNote,
+    descripcion: deliveryDescription,
     fechaHora: updatedAt,
     responsable: actor.nombreCompleto,
   }]);

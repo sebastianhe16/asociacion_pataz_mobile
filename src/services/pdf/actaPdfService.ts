@@ -79,6 +79,30 @@ function buildActHtml(
   const photoBlock = photoDataUri
     ? `<img class="evidence-photo" src="${photoDataUri}" alt="Fotografía de evidencia de entrega"/>`
     : '<div class="photo-placeholder">Fotografía no registrada</div>';
+  const deliveryVerificationBlock = movement.estadoEnvio !== 'ENTREGADO'
+    ? `<section class="section"><h2>Conformidad de Recepción en Destino</h2><p class="value">En ruta / Pendiente de verificación final en destino</p></section>`
+    : `<section class="section">
+        <h2>Conformidad de Recepción en Destino</h2>
+        <div class="integrity">${movement.estadoConformidadEntrega === 'COMPLETA'
+          ? 'COMPLETA'
+          : movement.estadoConformidadEntrega === 'PARCIAL_CON_OBSERVACION'
+            ? 'PARCIAL CON OBSERVACIÓN'
+            : 'PENDIENTE DE VERIFICACIÓN'}</div>
+        <table class="receipt-table">
+          <thead><tr><th>Cantidad Despachada</th><th>Cantidad Recibida</th><th>Diferencia / Faltante</th></tr></thead>
+          <tbody><tr>
+            <td>${movement.cantidad} ${escapeHtml(movement.insumoUnidad)}</td>
+            <td>${movement.cantidadEntregada === null ? 'No verificada' : `${movement.cantidadEntregada} ${escapeHtml(movement.insumoUnidad)}`}</td>
+            <td>${movement.diferenciaEntrega} ${escapeHtml(movement.insumoUnidad)}</td>
+          </tr></tbody>
+        </table>
+        ${movement.motivoDiferencia
+          ? `<p class="value"><strong>Motivo:</strong> ${escapeHtml(movement.motivoDiferencia)}</p>`
+          : ''}
+        ${movement.observacionEntrega
+          ? `<p class="value"><strong>Observación:</strong> ${escapeHtml(movement.observacionEntrega)}</p>`
+          : ''}
+      </section>`;
 
   return `<!doctype html>
   <html lang="es">
@@ -105,6 +129,10 @@ function buildActHtml(
         .photo-placeholder { padding: 28px; color: #64736b; background: #f3f6f4; text-align: center; border-radius: 6px; }
         .hash { font-family: monospace; font-size: 8px; line-height: 1.5; overflow-wrap: anywhere; color: #0f382b; }
         .integrity { color: #207343; font-weight: 700; margin-bottom: 8px; }
+        .receipt-table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        .receipt-table th, .receipt-table td { border: 1px solid #dce4df; padding: 8px; text-align: left; }
+        .receipt-table th { color: #0f382b; background: #f3f6f4; font-size: 9px; }
+        .receipt-table td { color: #23332c; font-size: 10px; }
         .compliance { margin-top: 20px; padding: 10px; border-left: 3px solid #d28a22; background: #fff8eb; color: #72531c; line-height: 1.5; }
         .footer { margin-top: 24px; padding-top: 10px; border-top: 1px solid #dce4df; color: #64736b; font-size: 9px; }
       </style>
@@ -131,6 +159,7 @@ function buildActHtml(
           <div class="field"><span class="label">Responsable de entrega</span><span class="value">${escapeHtml(movement.responsable)}</span></div>
         </div>
       </section>
+      ${deliveryVerificationBlock}
       <section class="section">
         <h2>Receptor</h2>
         <div class="row">

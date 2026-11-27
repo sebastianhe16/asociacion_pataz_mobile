@@ -12,6 +12,16 @@ export type EstadoEnvio =
   | 'EN_TRANSITO'
   | 'EN_PUNTO_ENTREGA'
   | 'ENTREGADO';
+export type EstadoConformidadEntrega =
+  | 'PENDIENTE'
+  | 'COMPLETA'
+  | 'PARCIAL_CON_OBSERVACION';
+export type MotivoDiferenciaEntrega =
+  | 'Daño en ruta / clima'
+  | 'Entrega parcial / fraccionada'
+  | 'Merma operativa'
+  | 'Extravío en tránsito'
+  | 'Otro';
 
 export interface HitoTracking {
   estado: EstadoEnvio;
@@ -61,6 +71,11 @@ export interface MovimientoAlmacen {
   codigoEnvio: string | null;
   estadoEnvio: EstadoEnvio | null;
   historialTrackingJson: string | null;
+  cantidadEntregada: number | null;
+  diferenciaEntrega: number;
+  estadoConformidadEntrega: EstadoConformidadEntrega;
+  motivoDiferencia: MotivoDiferenciaEntrega | null;
+  observacionEntrega: string | null;
 }
 
 export interface WarehouseMovementRecord extends MovimientoAlmacen {

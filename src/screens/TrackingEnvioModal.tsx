@@ -14,12 +14,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type {
   EstadoEnvio,
   HitoTracking,
+  MotivoDiferenciaEntrega,
   WarehouseMovementRecord,
 } from '../core/types';
 import { colors, spacing } from '../core/theme';
 import { InfoBanner, StepIndicator } from '../components/StepIndicator';
 import {
   advanceShipmentTracking,
+  type DeliveryVerificationInput,
   getWarehouseMovementDetails,
 } from '../database/db';
 import { useAuth } from '../services/auth/AuthProvider';
@@ -31,6 +33,13 @@ const STEPS: { estado: EstadoEnvio; titulo: string; icon: keyof typeof MaterialC
   { estado: 'EN_TRANSITO', titulo: 'En Tránsito', icon: 'truck-fast-outline' },
   { estado: 'EN_PUNTO_ENTREGA', titulo: 'En Punto de Entrega', icon: 'map-marker-check-outline' },
   { estado: 'ENTREGADO', titulo: 'Entregado', icon: 'check-decagram-outline' },
+];
+const DELIVERY_REASONS: MotivoDiferenciaEntrega[] = [
+  'Daño en ruta / clima',
+  'Entrega parcial / fraccionada',
+  'Merma operativa',
+  'Extravío en tránsito',
+  'Otro',
 ];
 
 interface TrackingEnvioModalProps {
@@ -75,6 +84,16 @@ function formatDate(value: string): string {
     });
 }
 
+function QuantityColumn({ label, value, unit }: { label: string; value: number | string; unit: string }) {
+    return (
+      <View style={styles.quantityColumn}>
+        <Text style={styles.quantityLabel}>{label}</Text>
+        <Text style={styles.quantityValue}>{value}</Text>
+        <Text style={styles.quantityUnit}>{unit}</Text>
+      </View>
+    );
+}
+
 export default function TrackingEnvioModal({
   visible,
   movement,
@@ -86,6 +105,9 @@ export default function TrackingEnvioModal({
   const { synchronize } = useSyncStatus();
   const [currentMovement, setCurrentMovement] = useState<WarehouseMovementRecord | null>(movement);
   const [note, setNote] = useState('');
+  const [receivedAmount, setReceivedAmount] = useState('');
+  const [differenceReason, setDifferenceReason] = useState<MotivoDiferenciaEntrega | null>(null);
+  const [deliveryObservation, setDeliveryObservation] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [confirmationMessage, setConfirmationMessage] = useState<string | null>(null);
@@ -101,6 +123,10 @@ export default function TrackingEnvioModal({
       .then((latest) => {
         if (active && latest) {
           setCurrentMovement(latest);
+          setReceivedAmount(String(latest.cantidad));
+          setDifferenceReason(null);
+          setDeliveryObservation('');
+          setError(null);
         }
       })
       .catch((cause: unknown) => {
@@ -111,7 +137,7 @@ export default function TrackingEnvioModal({
     return () => {
       active = false;
     };
-  }, [movementId, visible]);
+  }, [movement, movementId, visible]);
 
   const parsedHistory = useMemo(() => {
     try {
@@ -129,6 +155,14 @@ export default function TrackingEnvioModal({
   const history = parsedHistory.history;
   const currentStep = STEPS.findIndex((step) => step.estado === currentMovement?.estadoEnvio);
   const nextStep = STEPS[currentStep + 1];
+  const isFinalDelivery = nextStep?.estado === 'ENTREGADO';
+  const receivedAmountValue = receivedAmount.trim() === '' ? Number.NaN : Number(receivedAmount);
+  const isReceivedAmountValid = Number.isFinite(receivedAmountValue)
+    && receivedAmountValue >= 0
+    && (currentMovement === null || receivedAmountValue <= currentMovement.cantidad);
+  const hasDeliveryDifference = isReceivedAmountValid
+    && currentMovement !== null
+    && receivedAmountValue < currentMovement.cantidad;
 
   async function advanceTracking() {
     if (!currentMovement || !user) {
@@ -138,7 +172,14 @@ export default function TrackingEnvioModal({
     setIsSaving(true);
     setError(null);
     try {
-      const updated = await advanceShipmentTracking(currentMovement.id, note, user);
+      const delivery: DeliveryVerificationInput | undefined = isFinalDelivery
+        ? {
+          cantidadEntregada: receivedAmountValue,
+          motivoDiferencia: hasDeliveryDifference ? differenceReason : null,
+          observacionEntrega: hasDeliveryDifference ? deliveryObservation.trim() : null,
+        }
+        : undefined;
+      const updated = await advanceShipmentTracking(currentMovement.id, note, user, delivery);
       setCurrentMovement(updated);
       setNote('');
       const syncResult = isOnline ? await synchronize() : null;
@@ -224,6 +265,65 @@ export default function TrackingEnvioModal({
                 </View>
               </View>
 
+              {currentMovement.estadoEnvio === 'ENTREGADO' && (
+                <View style={[
+                  styles.deliveryVerificationCard,
+                  currentMovement.estadoConformidadEntrega === 'COMPLETA'
+                    ? styles.deliveryCompleteCard
+                    : currentMovement.estadoConformidadEntrega === 'PARCIAL_CON_OBSERVACION'
+                      ? styles.deliveryPartialCard
+                      : styles.deliveryPendingCard,
+                ]}>
+                  <View style={styles.deliveryVerificationHeader}>
+                    <Text style={styles.sectionTitle}>Conformidad de Recepción en Destino</Text>
+                    <Text style={[
+                      styles.deliveryBadge,
+                      currentMovement.estadoConformidadEntrega === 'COMPLETA'
+                        ? styles.deliveryCompleteBadge
+                        : currentMovement.estadoConformidadEntrega === 'PARCIAL_CON_OBSERVACION'
+                          ? styles.deliveryPartialBadge
+                          : styles.deliveryPendingBadge,
+                    ]}>
+                      {currentMovement.estadoConformidadEntrega === 'COMPLETA'
+                        ? 'Entrega Completa'
+                        : currentMovement.estadoConformidadEntrega === 'PARCIAL_CON_OBSERVACION'
+                          ? 'Entrega Parcial / Con Incidencia'
+                          : 'Pendiente de verificación'}
+                    </Text>
+                  </View>
+                  <View style={styles.quantityComparison}>
+                    <QuantityColumn label="Despachado" value={currentMovement.cantidad} unit={currentMovement.insumoUnidad} />
+                    <QuantityColumn
+                      label="Recibido"
+                      value={currentMovement.cantidadEntregada ?? '—'}
+                      unit={currentMovement.insumoUnidad}
+                    />
+                    <QuantityColumn
+                      label="Diferencia"
+                      value={currentMovement.estadoConformidadEntrega === 'PENDIENTE'
+                        ? '—'
+                        : currentMovement.diferenciaEntrega}
+                      unit={currentMovement.insumoUnidad}
+                    />
+                  </View>
+                  {currentMovement.estadoConformidadEntrega === 'PENDIENTE' && (
+                    <Text style={styles.deliveryIncidentText}>
+                      Este envío no tiene una verificación final de recepción registrada.
+                    </Text>
+                  )}
+                  {currentMovement.estadoConformidadEntrega === 'PARCIAL_CON_OBSERVACION' && (
+                    <View style={styles.deliveryIncident}>
+                      <Text style={styles.deliveryIncidentText}>
+                        Motivo: {currentMovement.motivoDiferencia ?? 'No indicado'}
+                      </Text>
+                      <Text style={styles.deliveryIncidentText}>
+                        Observación: {currentMovement.observacionEntrega ?? 'No registrada'}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
+
               <View style={styles.statusBanner}>
                 <View style={styles.statusPulse}>
                   <MaterialCommunityIcons
@@ -287,23 +387,107 @@ export default function TrackingEnvioModal({
 
               {nextStep && canAdvance && (
                 <View style={styles.advanceSection}>
-                  <Text style={styles.sectionTitle}>Actualizar etapa</Text>
-                  <TextInput
-                    accessibilityLabel="Nota de control de envío"
-                    value={note}
-                    onChangeText={setNote}
-                    placeholder={`Nota para «${nextStep.titulo}»`}
-                    placeholderTextColor={colors.textSecondary}
-                    style={styles.noteInput}
-                    multiline
-                    maxLength={500}
-                    textAlignVertical="top"
-                  />
+                  <Text style={styles.sectionTitle}>
+                    {isFinalDelivery ? 'Verificación de Recepción en Destino' : 'Actualizar etapa'}
+                  </Text>
+                  {isFinalDelivery ? (
+                    <View style={styles.receiptForm}>
+                      <Text style={styles.receiptReference}>
+                        Cantidad despachada de almacén: {currentMovement.cantidad} {currentMovement.insumoUnidad}
+                      </Text>
+                      <Text style={styles.fieldLabel}>Cantidad que llegó a destino</Text>
+                      <TextInput
+                        accessibilityLabel="Cantidad que llegó a destino"
+                        value={receivedAmount}
+                        onChangeText={setReceivedAmount}
+                        placeholder="Cantidad recibida"
+                        placeholderTextColor={colors.textSecondary}
+                        style={styles.receivedInput}
+                        keyboardType="decimal-pad"
+                      />
+                      {!isReceivedAmountValid && (
+                        <Text style={styles.errorText}>
+                          Ingresa un valor entre 0 y {currentMovement.cantidad}.
+                        </Text>
+                      )}
+                      {isReceivedAmountValid && !hasDeliveryDifference && (
+                        <Text style={styles.completeReceiptText}>
+                          Recepción completa (100% conforme)
+                        </Text>
+                      )}
+                      {hasDeliveryDifference && (
+                        <View style={styles.partialReceiptPanel}>
+                          <Text style={styles.partialReceiptTitle}>
+                            Faltante detectado: {receivedAmountValue - currentMovement.cantidad} {currentMovement.insumoUnidad}
+                          </Text>
+                          <Text style={styles.fieldLabel}>Motivo de la diferencia</Text>
+                          <View style={styles.reasonChips}>
+                            {DELIVERY_REASONS.map((reason) => (
+                              <Pressable
+                                key={reason}
+                                accessibilityRole="button"
+                                accessibilityState={{ selected: differenceReason === reason }}
+                                onPress={() => setDifferenceReason(reason)}
+                                style={[
+                                  styles.reasonChip,
+                                  differenceReason === reason && styles.reasonChipSelected,
+                                ]}
+                              >
+                                <Text style={[
+                                  styles.reasonChipText,
+                                  differenceReason === reason && styles.reasonChipTextSelected,
+                                ]}>
+                                  {reason}
+                                </Text>
+                              </Pressable>
+                            ))}
+                          </View>
+                          <Text style={styles.fieldLabel}>Observación de trazabilidad</Text>
+                          <TextInput
+                            accessibilityLabel="Observación de trazabilidad"
+                            value={deliveryObservation}
+                            onChangeText={setDeliveryObservation}
+                            placeholder="Describe la incidencia observada en destino"
+                            placeholderTextColor={colors.textSecondary}
+                            style={styles.noteInput}
+                            multiline
+                            maxLength={1000}
+                            textAlignVertical="top"
+                          />
+                        </View>
+                      )}
+                    </View>
+                  ) : (
+                    <TextInput
+                      accessibilityLabel="Nota de control de envío"
+                      value={note}
+                      onChangeText={setNote}
+                      placeholder={`Nota para «${nextStep.titulo}»`}
+                      placeholderTextColor={colors.textSecondary}
+                      style={styles.noteInput}
+                      multiline
+                      maxLength={500}
+                      textAlignVertical="top"
+                    />
+                  )}
                   <Pressable
                     accessibilityRole="button"
-                    disabled={isSaving}
+                    disabled={isSaving
+                      || (isFinalDelivery && (
+                        !isReceivedAmountValid
+                        || (hasDeliveryDifference && (!differenceReason || !deliveryObservation.trim()))
+                      ))
+                      || (!isFinalDelivery && !note.trim())}
                     onPress={() => void advanceTracking()}
-                    style={[styles.advanceButton, isSaving && styles.disabledButton]}
+                    style={[
+                      styles.advanceButton,
+                      (isSaving
+                        || (isFinalDelivery && (
+                          !isReceivedAmountValid
+                          || (hasDeliveryDifference && (!differenceReason || !deliveryObservation.trim()))
+                        ))
+                        || (!isFinalDelivery && !note.trim())) && styles.disabledButton,
+                    ]}
                   >
                     {isSaving ? (
                       <ActivityIndicator color={colors.onPrimary} />
@@ -392,6 +576,42 @@ const styles = StyleSheet.create({
     borderRadius: 15,
     backgroundColor: colors.surface,
   },
+  deliveryVerificationCard: {
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderRadius: 14,
+  },
+  deliveryCompleteCard: { borderColor: '#B9DCC4', backgroundColor: '#F2FAF4' },
+  deliveryPartialCard: { borderColor: '#E8C887', backgroundColor: '#FFF8EB' },
+  deliveryPendingCard: { borderColor: colors.border, backgroundColor: colors.surface },
+  deliveryVerificationHeader: { gap: spacing.xs },
+  deliveryBadge: {
+    alignSelf: 'flex-start',
+    overflow: 'hidden',
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 12,
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  deliveryCompleteBadge: { color: colors.online, backgroundColor: colors.accentLight },
+  deliveryPartialBadge: { color: colors.offline, backgroundColor: colors.warningBackground },
+  deliveryPendingBadge: { color: colors.textSecondary, backgroundColor: colors.background },
+  quantityComparison: { flexDirection: 'row', gap: spacing.sm },
+  quantityColumn: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 3,
+    padding: spacing.sm,
+    borderRadius: 10,
+    backgroundColor: colors.surface,
+  },
+  quantityLabel: { color: colors.textSecondary, fontSize: 9, fontWeight: '700' },
+  quantityValue: { color: colors.primaryDark, fontSize: 16, fontWeight: '800' },
+  quantityUnit: { color: colors.textSecondary, fontSize: 9 },
+  deliveryIncident: { gap: 4, paddingTop: spacing.xs },
+  deliveryIncidentText: { color: colors.text, fontSize: 11, lineHeight: 16 },
   summaryRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   summaryCopy: { flex: 1, gap: 2 },
   summaryLabel: { color: colors.textSecondary, fontSize: 8, fontWeight: '800', letterSpacing: 0.6 },
@@ -465,6 +685,46 @@ const styles = StyleSheet.create({
   milestoneResponsible: { color: colors.textSecondary, fontSize: 9 },
   milestoneWaiting: { color: colors.textSecondary, fontSize: 9 },
   advanceSection: { gap: spacing.sm, paddingTop: spacing.xs },
+  receiptForm: { gap: spacing.sm },
+  receiptReference: { color: colors.textSecondary, fontSize: 11, fontWeight: '700' },
+  fieldLabel: { color: colors.textSecondary, fontSize: 10, fontWeight: '800' },
+  receivedInput: {
+    minHeight: 46,
+    paddingHorizontal: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 11,
+    color: colors.text,
+    fontSize: 14,
+    backgroundColor: colors.surface,
+  },
+  completeReceiptText: {
+    padding: 10,
+    borderRadius: 10,
+    color: colors.online,
+    fontSize: 11,
+    fontWeight: '800',
+    backgroundColor: colors.accentLight,
+  },
+  partialReceiptPanel: {
+    gap: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: 11,
+    backgroundColor: colors.warningBackground,
+  },
+  partialReceiptTitle: { color: colors.error, fontSize: 12, fontWeight: '800' },
+  reasonChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
+  reasonChip: {
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    borderWidth: 1,
+    borderColor: '#E8C887',
+    borderRadius: 15,
+    backgroundColor: colors.surface,
+  },
+  reasonChipSelected: { borderColor: colors.primary, backgroundColor: colors.primary },
+  reasonChipText: { color: colors.text, fontSize: 9, fontWeight: '700' },
+  reasonChipTextSelected: { color: colors.onPrimary },
   noteInput: {
     minHeight: 82,
     padding: 11,

@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, spacing } from '../core/theme';
 import {
   getInTransitShipments,
+  getIncompleteDeliveryShipments,
   getProjectCount,
   getPurchaseOrders,
   getRecentManagerialDecisions,
@@ -55,6 +56,7 @@ interface DashboardData {
   donationOpportunities: DonationSurplusOpportunity[];
   shipmentCounts: ShipmentStatusCounts;
   inTransitShipments: WarehouseMovementRecord[];
+  incompleteDeliveries: WarehouseMovementRecord[];
   decisions: DecisionGerencial[];
   activities: RecentActivity[];
   warehouseSummaries: WarehouseStatusSummary[];
@@ -90,6 +92,7 @@ export default function HomeScreen() {
     donationOpportunities: DonationSurplusOpportunity[];
     shipmentCounts: ShipmentStatusCounts;
     inTransitShipments: WarehouseMovementRecord[];
+    incompleteDeliveries: WarehouseMovementRecord[];
     decisions: DecisionGerencial[];
     approvedOrderCount: number;
   } | null>(null);
@@ -104,6 +107,7 @@ export default function HomeScreen() {
       warehouseSummaries,
       shipmentCounts,
       inTransitShipments,
+      incompleteDeliveries,
       decisions,
       purchaseOrders,
     ] =
@@ -113,6 +117,7 @@ export default function HomeScreen() {
         getWarehouseStatusSummaries(),
         getShipmentStatusCounts(),
         getInTransitShipments(),
+        getIncompleteDeliveryShipments(100),
         getRecentManagerialDecisions(),
         getPurchaseOrders(),
       ]);
@@ -126,6 +131,7 @@ export default function HomeScreen() {
       donationOpportunities,
       shipmentCounts,
       inTransitShipments,
+      incompleteDeliveries,
       decisions,
       activities,
       warehouseSummaries,
@@ -140,6 +146,7 @@ export default function HomeScreen() {
       donationOpportunities: data.donationOpportunities,
       shipmentCounts: data.shipmentCounts,
       inTransitShipments: data.inTransitShipments,
+      incompleteDeliveries: data.incompleteDeliveries,
       decisions: data.decisions,
       approvedOrderCount: data.approvedOrderCount,
     });
@@ -251,6 +258,7 @@ export default function HomeScreen() {
 
   const deficits = executiveData?.balances.filter((item) => item.estadoBalance === 'DEFICIT') ?? [];
   const inTransitShipments = executiveData?.inTransitShipments ?? [];
+  const incompleteDeliveries = executiveData?.incompleteDeliveries ?? [];
   const itemCount = executiveData?.balances.length ?? 0;
   const serviceLevel = itemCount > 0
     ? Math.round(((itemCount - deficits.length) / itemCount) * 100)
@@ -480,7 +488,14 @@ export default function HomeScreen() {
                   onPress={() => undefined}
                 />
               )}
-            {executiveData?.donationOpportunities.length === 0 && deficits.length === 0 && inTransitShipments.length === 0 && (
+            {incompleteDeliveries.map((movement) => (
+              <IncompleteDeliveryCard
+                key={`incomplete-${movement.id}`}
+                movement={movement}
+                onPress={() => setTrackingMovement(movement)}
+              />
+            ))}
+            {executiveData?.donationOpportunities.length === 0 && deficits.length === 0 && inTransitShipments.length === 0 && incompleteDeliveries.length === 0 && (
               <View style={styles.opportunityEmpty}>
                 <MaterialCommunityIcons name="check-circle-outline" size={22} color={colors.online} />
                 <Text style={styles.opportunityEmptyText}>
@@ -563,9 +578,15 @@ export default function HomeScreen() {
         onClose={() => setTrackingMovement(null)}
         onUpdated={(updated) => {
           setTrackingMovement(updated);
+          void refreshDashboardData();
           setActivities((current) => current.map((activity) =>
             activity.id === updated.id
-              ? { ...activity, estadoEnvio: updated.estadoEnvio }
+              ? {
+                ...activity,
+                estadoEnvio: updated.estadoEnvio,
+                estadoConformidadEntrega: updated.estadoConformidadEntrega,
+                diferenciaEntrega: updated.diferenciaEntrega,
+              }
               : activity,
           ));
         }}
@@ -758,6 +779,44 @@ function ShipmentOpportunityCard({
   );
 }
 
+function IncompleteDeliveryCard({
+  movement,
+  onPress,
+}: {
+  movement: WarehouseMovementRecord;
+  onPress: () => void;
+}) {
+  const missingQuantity = Math.abs(movement.diferenciaEntrega);
+  return (
+    <View style={[styles.opportunityCard, styles.deficitCard]}>
+      <View style={styles.opportunityHeader}>
+        <View style={[styles.opportunityIcon, styles.deficitIcon]}>
+          <MaterialCommunityIcons name="package-variant-closed" size={20} color={colors.error} />
+        </View>
+        <Text style={[styles.opportunityType, styles.deficitType]}>ALERTA DE ENTREGA INCOMPLETA</Text>
+      </View>
+      <Text style={styles.opportunityTitle}>
+        {missingQuantity} {movement.insumoUnidad} faltantes en destino
+      </Text>
+      <Text style={styles.opportunityLocation}>
+        {movement.codigoEnvio} · {movement.destinoCaserio ?? 'Destino no indicado'}
+      </Text>
+      <Text style={styles.opportunityDescription}>
+        {movement.insumoNombre}: {movement.cantidadEntregada ?? 0}/{movement.cantidad} recibidos.
+        {' '}{movement.motivoDiferencia ?? 'Requiere revisión de trazabilidad'}.
+      </Text>
+      <Pressable
+        accessibilityRole="button"
+        onPress={onPress}
+        style={[styles.opportunityButton, styles.deficitButton]}
+      >
+        <Text style={styles.opportunityButtonText}>Revisar seguimiento</Text>
+        <MaterialCommunityIcons name="arrow-right" size={16} color={colors.onPrimary} />
+      </Pressable>
+    </View>
+  );
+}
+
 function DecisionHistoryCard({ decision }: { decision: DecisionGerencial }) {
   const icon = decision.tipo === 'NUEVO_PROYECTO_DONACION'
     ? 'sprout-outline'
@@ -826,6 +885,11 @@ function ActivityRow({
       <View style={styles.activityCopy}>
         <Text style={styles.activityTitle} numberOfLines={1}>{activity.title}</Text>
         <Text style={styles.activityDetail} numberOfLines={1}>{activity.detail}</Text>
+        {activity.estadoConformidadEntrega === 'PARCIAL_CON_OBSERVACION' && (
+          <Text style={styles.partialDeliveryLabel}>
+            Entrega Parcial (-{Math.abs(activity.diferenciaEntrega ?? 0)})
+          </Text>
+        )}
         <Text style={styles.activityTimestamp}>{formatTimestamp(activity.timestamp)}</Text>
       </View>
       <View style={[styles.activityStatus, { backgroundColor: status.backgroundColor }]}>
@@ -1178,6 +1242,16 @@ const styles = StyleSheet.create({
   activityDetail: {
     color: colors.textSecondary,
     fontSize: 10,
+  },
+  partialDeliveryLabel: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 8,
+    color: colors.offline,
+    fontSize: 9,
+    fontWeight: '800',
+    backgroundColor: colors.warningBackground,
   },
   activityTimestamp: {
     color: colors.textSecondary,

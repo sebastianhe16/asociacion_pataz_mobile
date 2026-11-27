@@ -47,7 +47,22 @@ export const DATABASE_SCHEMA = `
         'ENTREGADO'
       ) OR estado_envio IS NULL
     ),
-    historial_tracking_json TEXT
+    historial_tracking_json TEXT,
+    cantidad_entregada REAL,
+    diferencia_entrega REAL NOT NULL DEFAULT 0,
+    estado_conformidad_entrega TEXT NOT NULL DEFAULT 'PENDIENTE' CHECK (
+      estado_conformidad_entrega IN ('PENDIENTE', 'COMPLETA', 'PARCIAL_CON_OBSERVACION')
+    ),
+    motivo_diferencia TEXT CHECK (
+      motivo_diferencia IN (
+        'Daño en ruta / clima',
+        'Entrega parcial / fraccionada',
+        'Merma operativa',
+        'Extravío en tránsito',
+        'Otro'
+      ) OR motivo_diferencia IS NULL
+    ),
+    observacion_entrega TEXT
   );
 
   CREATE TABLE IF NOT EXISTS proyectos (

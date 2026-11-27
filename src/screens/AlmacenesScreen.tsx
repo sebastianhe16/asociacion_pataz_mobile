@@ -1114,6 +1114,11 @@ function WarehouseMovementCard({
             {movement.codigoEnvio} · {stateLabel}
           </Text>
         )}
+        {movement.estadoConformidadEntrega === 'PARCIAL_CON_OBSERVACION' && (
+          <Text style={styles.partialDeliveryLabel}>
+            Entrega Parcial (-{Math.abs(movement.diferenciaEntrega)} {movement.insumoUnidad})
+          </Text>
+        )}
         <View style={styles.movementHistoryActions}>
           {movement.codigoEnvio && (
             <Pressable accessibilityRole="button" onPress={onTrack} style={styles.trackingAction}>
@@ -2104,6 +2109,16 @@ const styles = StyleSheet.create({
   movementHistoryTitle: { color: colors.text, fontSize: 11, fontWeight: '800' },
   movementHistoryDetail: { color: colors.textSecondary, fontSize: 9, lineHeight: 14 },
   shipmentCode: { color: colors.primary, fontSize: 9, fontWeight: '800' },
+  partialDeliveryLabel: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 8,
+    color: colors.offline,
+    fontSize: 9,
+    fontWeight: '800',
+    backgroundColor: colors.warningBackground,
+  },
   movementHistoryActions: { flexDirection: 'row', gap: 12, marginTop: 3 },
   trackingAction: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   actaAction: { flexDirection: 'row', alignItems: 'center', gap: 4 },
