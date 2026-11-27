@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState, type ComponentProps } from 'react';
+import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
+import { useFocusEffect, useIsFocused, useNavigation } from '@react-navigation/native';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
@@ -14,6 +16,7 @@ import { colors, spacing } from '../core/theme';
 import {
   getInTransitShipments,
   getProjectCount,
+  getPurchaseOrders,
   getRecentManagerialDecisions,
   getRecentActivities,
   getShipmentStatusCounts,
@@ -38,6 +41,7 @@ import {
 import ActaEntregaModal from './ActaEntregaModal';
 import TrackingEnvioModal from './TrackingEnvioModal';
 import DecisionGerencialModal from '../components/DecisionGerencialModal';
+import type { MainTabParamList } from '../navigation/types';
 
 type IconName = ComponentProps<typeof MaterialCommunityIcons>['name'];
 
@@ -54,6 +58,7 @@ interface DashboardData {
   decisions: DecisionGerencial[];
   activities: RecentActivity[];
   warehouseSummaries: WarehouseStatusSummary[];
+  approvedOrderCount: number;
 }
 
 function formatTimestamp(timestamp: string): string {
@@ -70,8 +75,10 @@ function formatTimestamp(timestamp: string): string {
 }
 
 export default function HomeScreen() {
+  const navigation = useNavigation<BottomTabNavigationProp<MainTabParamList>>();
   const { user } = useAuth();
-  const { pendingCount } = useSyncStatus();
+  const { refreshTrigger, pendingApprovalOrderCount, pendingOrderCount, pendingCount } = useSyncStatus();
+  const isFocused = useIsFocused();
   const [activities, setActivities] = useState<RecentActivity[]>([]);
   const [warehouseSummaries, setWarehouseSummaries] = useState<WarehouseStatusSummary[]>([]);
   const [actaMovement, setActaMovement] = useState<WarehouseMovementRecord | null>(null);
@@ -84,13 +91,22 @@ export default function HomeScreen() {
     shipmentCounts: ShipmentStatusCounts;
     inTransitShipments: WarehouseMovementRecord[];
     decisions: DecisionGerencial[];
+    approvedOrderCount: number;
   } | null>(null);
   const [decisionTarget, setDecisionTarget] = useState<ExecutiveDecisionTarget | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchDashboardData = useCallback(async (): Promise<DashboardData> => {
-    const [balances, activities, warehouseSummaries, shipmentCounts, inTransitShipments, decisions] =
+    const [
+      balances,
+      activities,
+      warehouseSummaries,
+      shipmentCounts,
+      inTransitShipments,
+      decisions,
+      purchaseOrders,
+    ] =
       await Promise.all([
         getInventoryBalances(),
         getRecentActivities(),
@@ -98,6 +114,7 @@ export default function HomeScreen() {
         getShipmentStatusCounts(),
         getInTransitShipments(),
         getRecentManagerialDecisions(),
+        getPurchaseOrders(),
       ]);
     const [donationOpportunities, projectCount] = await Promise.all([
       getDonationSurplusOpportunities(balances),
@@ -112,6 +129,7 @@ export default function HomeScreen() {
       decisions,
       activities,
       warehouseSummaries,
+      approvedOrderCount: purchaseOrders.filter((order) => order.estado === 'APROBADA').length,
     };
   }, []);
 
@@ -123,6 +141,7 @@ export default function HomeScreen() {
       shipmentCounts: data.shipmentCounts,
       inTransitShipments: data.inTransitShipments,
       decisions: data.decisions,
+      approvedOrderCount: data.approvedOrderCount,
     });
     setActivities(data.activities);
     setWarehouseSummaries(data.warehouseSummaries);
@@ -139,7 +158,41 @@ export default function HomeScreen() {
     }
   }, [applyDashboardData, fetchDashboardData]);
 
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      fetchDashboardData()
+        .then((data) => {
+          if (active) {
+            applyDashboardData(data);
+            setError(null);
+          }
+        })
+        .catch((cause: unknown) => {
+          if (active) {
+            setError(cause instanceof Error ? cause.message : 'No se pudo cargar el panel gerencial local.');
+          }
+        })
+        .finally(() => {
+          if (active) {
+            setIsLoading(false);
+          }
+        });
+      return () => {
+        active = false;
+      };
+    }, [applyDashboardData, fetchDashboardData]),
+  );
+
+  const lastRefreshTrigger = useRef(refreshTrigger);
   useEffect(() => {
+    if (lastRefreshTrigger.current === refreshTrigger) {
+      return undefined;
+    }
+    lastRefreshTrigger.current = refreshTrigger;
+    if (!isFocused) {
+      return undefined;
+    }
     let active = true;
     fetchDashboardData()
       .then((data) => {
@@ -161,7 +214,7 @@ export default function HomeScreen() {
     return () => {
       active = false;
     };
-  }, [applyDashboardData, fetchDashboardData, pendingCount]);
+  }, [applyDashboardData, fetchDashboardData, isFocused, refreshTrigger]);
 
   async function openActivityActa(activity: RecentActivity) {
     if (activity.hasActa !== 1) {
@@ -234,6 +287,120 @@ export default function HomeScreen() {
           </Text>
           <View style={styles.bannerAccent} />
         </LinearGradient>
+
+        <View style={styles.sectionHeading}>
+          <View>
+            <Text style={styles.sectionTitle}>Tu ruta de gestión recomendada</Text>
+            <Text style={styles.sectionSubtitle}>Acciones prioritarias según tu perfil y la operación actual</Text>
+          </View>
+        </View>
+        <View style={styles.guidedRoute}>
+          {(user?.roleKey === 'ADMIN'
+            ? [
+                {
+                  title: 'Aprobar órdenes pendientes',
+                  detail: `${pendingApprovalOrderCount} pendientes de revisión`,
+                  action: () => navigation.navigate('Warehouses', {
+                    initialView: 'ORDENES',
+                    initialOrderFilter: 'PENDIENTE',
+                  }),
+                },
+                {
+                  title: 'Resolver desbalances de stock',
+                  detail: `${deficits.length} insumos con déficit`,
+                  action: () => navigation.navigate('Warehouses', {
+                    initialView: 'INVENTARIO',
+                    initialCategoryFilter: 'Desbalances',
+                  }),
+                },
+                {
+                  title: 'Evaluar oportunidades por donación',
+                  detail: executiveData?.donationOpportunities[0]
+                    ? `${executiveData.donationOpportunities[0].nombre} · +${executiveData.donationOpportunities[0].excedenteDonado} ${executiveData.donationOpportunities[0].unidad}`
+                    : 'Revisa excedentes disponibles en almacén',
+                  action: () => {
+                    const opportunity = executiveData?.donationOpportunities[0];
+                    if (opportunity) {
+                      setDecisionTarget({ mode: 'DONATION', item: opportunity });
+                    } else {
+                      navigation.navigate('Warehouses', { initialView: 'INVENTARIO' });
+                    }
+                  },
+                },
+                {
+                  title: 'Supervisar envíos en ruta',
+                  detail: `${executiveData?.shipmentCounts.inTransit ?? 0} paquetes en tránsito`,
+                  action: () => {
+                    const shipment = executiveData?.inTransitShipments[0];
+                    if (shipment) {
+                      setTrackingMovement(shipment);
+                    } else {
+                      navigation.navigate('Warehouses', { initialView: 'INVENTARIO' });
+                    }
+                  },
+                },
+              ]
+            : user?.roleKey === 'CAMPO'
+              ? [
+                  {
+                    title: 'Registrar ficha en proyecto',
+                    detail: `${executiveData?.projectCount ?? 0} proyectos activos`,
+                    action: () => navigation.navigate('Field'),
+                  },
+                  {
+                    title: 'Solicitar materiales',
+                    detail: `${pendingOrderCount} órdenes pendientes de aprobación`,
+                    action: () => navigation.navigate('Warehouses', {
+                      initialView: 'ORDENES',
+                      createOrder: true,
+                    }),
+                  },
+                  {
+                    title: 'Verificar sincronización',
+                    detail: `${pendingCount} registros por sincronizar`,
+                    action: () => navigation.navigate('Sync'),
+                  },
+                ]
+              : [
+                  {
+                    title: 'Revisar órdenes aprobadas',
+                    detail: `${executiveData?.approvedOrderCount ?? 0} listas para despacho`,
+                    action: () => navigation.navigate('Warehouses', {
+                      initialView: 'ORDENES',
+                      initialOrderFilter: 'APROBADA',
+                    }),
+                  },
+                  {
+                    title: 'Registrar despacho con firma y Acta',
+                    detail: 'Captura GPS, foto y firma del receptor',
+                    action: () => navigation.navigate('Warehouses', {
+                      initialView: 'INVENTARIO',
+                      openMovement: true,
+                    }),
+                  },
+                  {
+                    title: 'Actualizar estado de envíos',
+                    detail: `${executiveData?.shipmentCounts.inTransit ?? 0} paquetes en ruta`,
+                    action: () => {
+                      const shipment = executiveData?.inTransitShipments[0];
+                      if (shipment) {
+                        setTrackingMovement(shipment);
+                      } else {
+                        navigation.navigate('Warehouses', { initialView: 'INVENTARIO' });
+                      }
+                    },
+                  },
+                ]
+          ).map((item, index) => (
+            <GuidedActionCard
+              key={item.title}
+              number={index + 1}
+              title={item.title}
+              detail={item.detail}
+              onPress={item.action}
+            />
+          ))}
+        </View>
 
         <View style={styles.sectionHeading}>
           <View>
@@ -436,6 +603,38 @@ function MetricCard({ icon, value, label, detail }: MetricCardProps) {
       <Text style={styles.metricLabel}>{label}</Text>
       <Text style={styles.metricDetail}>{detail}</Text>
     </View>
+  );
+}
+
+function GuidedActionCard({
+  number,
+  title,
+  detail,
+  onPress,
+}: {
+  number: number;
+  title: string;
+  detail: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [styles.guidedAction, pressed && styles.guidedActionPressed]}
+    >
+      <View style={styles.guidedNumber}>
+        <Text style={styles.guidedNumberText}>{number}</Text>
+      </View>
+      <View style={styles.guidedCopy}>
+        <Text style={styles.guidedTitle}>{title}</Text>
+        <Text style={styles.guidedDetail} numberOfLines={2}>{detail}</Text>
+      </View>
+      <View style={styles.guidedContinue}>
+        <Text style={styles.guidedContinueText}>Continuar</Text>
+        <MaterialCommunityIcons name="chevron-right" size={16} color={colors.primary} />
+      </View>
+    </Pressable>
   );
 }
 
@@ -769,6 +968,33 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     gap: spacing.sm,
   },
+  guidedRoute: { gap: spacing.sm },
+  guidedAction: {
+    minHeight: 68,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: 11,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 14,
+    backgroundColor: colors.surface,
+  },
+  guidedActionPressed: { opacity: 0.82 },
+  guidedNumber: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: colors.primary,
+  },
+  guidedNumberText: { color: colors.onPrimary, fontSize: 14, fontWeight: '800' },
+  guidedCopy: { flex: 1, gap: 3 },
+  guidedTitle: { color: colors.text, fontSize: 12, fontWeight: '800' },
+  guidedDetail: { color: colors.textSecondary, fontSize: 10, lineHeight: 14 },
+  guidedContinue: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  guidedContinueText: { color: colors.primary, fontSize: 9, fontWeight: '800' },
   bannerDecoration: {
     position: 'absolute',
     top: -64,

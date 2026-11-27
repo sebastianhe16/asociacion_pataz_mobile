@@ -14,6 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type { EstadoOrdenCompra, OrdenCompra } from '../core/types';
 import type { UsuarioSesion } from '../core/types/auth';
 import { colors, spacing } from '../core/theme';
+import { InfoBanner, StepIndicator } from '../components/StepIndicator';
 
 interface DetalleOrdenCompraModalProps {
   visible: boolean;
@@ -22,6 +23,7 @@ interface DetalleOrdenCompraModalProps {
   onClose: () => void;
   onReview: (decision: 'APROBADA' | 'RECHAZADA', observation: string) => Promise<void>;
   onAttend: () => Promise<void>;
+  onRegisterExit: () => void;
 }
 
 const dateFormatter = new Intl.DateTimeFormat('es-PE', {
@@ -44,6 +46,7 @@ export default function DetalleOrdenCompraModal({
   onClose,
   onReview,
   onAttend,
+  onRegisterExit,
 }: DetalleOrdenCompraModalProps) {
   const [observation, setObservation] = useState('');
   const [busyAction, setBusyAction] = useState<'APROBADA' | 'RECHAZADA' | 'ATENDIDA' | null>(null);
@@ -56,6 +59,7 @@ export default function DetalleOrdenCompraModal({
   const canAttend =
     (user.roleKey === 'CAMPO' || user.roleKey === 'LOGISTICA') &&
     order.estado === 'APROBADA';
+  const orderStep = order.estado === 'ATENDIDA' ? 2 : order.estado === 'APROBADA' ? 1 : 0;
 
   async function runAction(action: 'APROBADA' | 'RECHAZADA' | 'ATENDIDA') {
     setError(null);
@@ -96,6 +100,13 @@ export default function DetalleOrdenCompraModal({
             <View style={[styles.statusPill, statusStyle[order.estado]]}>
               <Text style={[styles.statusText, statusTextStyle[order.estado]]}>{order.estado}</Text>
             </View>
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Flujo de atención</Text>
+              <StepIndicator
+                steps={['Solicitada', 'Aprobada', 'Atendida']}
+                currentStep={orderStep}
+              />
+            </View>
             <Text style={styles.priority}>Prioridad {order.prioridad.toLocaleLowerCase()}</Text>
           </View>
 
@@ -128,7 +139,12 @@ export default function DetalleOrdenCompraModal({
 
           {canReview ? (
             <View style={styles.actionPanel}>
-              <Text style={styles.cardTitle}>Revisión de Administración</Text>
+              <Text style={styles.cardTitle}>¿Qué sigue ahora?</Text>
+              <InfoBanner
+                message="Revisa el requerimiento y aprueba o rechaza la solicitud."
+                tone="warning"
+                icon="shield-account-outline"
+              />
               <TextInput
                 accessibilityLabel="Observación de revisión"
                 value={observation}
@@ -156,22 +172,36 @@ export default function DetalleOrdenCompraModal({
                 />
               </View>
             </View>
-          ) : canAttend ? (
+          ) : order.estado === 'APROBADA' ? (
             <View style={styles.actionPanel}>
-              <Text style={styles.cardTitle}>Despacho de almacén</Text>
-              <Text style={styles.detailText}>Confirma cuando los materiales hayan sido entregados.</Text>
-              <ActionButton
-                label="Confirmar envío / atendida"
-                icon="truck-check-outline"
-                disabled={busyAction !== null}
-                isBusy={busyAction === 'ATENDIDA'}
-                onPress={() => void runAction('ATENDIDA')}
+              <Text style={styles.cardTitle}>¿Qué sigue ahora?</Text>
+              <InfoBanner
+                message="La orden está aprobada. Registra la salida de almacén y completa el pasaporte fiduciario."
+                tone="success"
+                icon="check-circle-outline"
               />
+              <ActionButton
+                label="Registrar salida en Almacén ahora"
+                icon="truck-fast-outline"
+                disabled={busyAction !== null}
+                isBusy={false}
+                onPress={onRegisterExit}
+              />
+              {canAttend && (
+                <ActionButton
+                  label="Confirmar orden atendida"
+                  icon="truck-check-outline"
+                  disabled={busyAction !== null}
+                  isBusy={busyAction === 'ATENDIDA'}
+                  onPress={() => void runAction('ATENDIDA')}
+                  secondary
+                />
+              )}
             </View>
           ) : order.estado === 'PENDIENTE' ? (
             <View style={styles.notice}>
               <MaterialCommunityIcons name="shield-account-outline" size={20} color={colors.primary} />
-              <Text style={styles.noticeText}>En espera de aprobación por Administración.</Text>
+              <Text style={styles.noticeText}>En espera de revisión por Gerencia.</Text>
             </View>
           ) : null}
           {error && (

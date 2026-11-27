@@ -1,9 +1,16 @@
-import { Tabs } from 'expo-router';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { View } from 'react-native';
 import { colors } from '../core/theme';
 import { Header } from '../components/Header';
 import { useSyncStatus } from '../services/sync/SyncProvider';
+import HomeScreen from '../screens/HomeScreen';
+import AlmacenesScreen from '../screens/AlmacenesScreen';
+import ProyectosCampoScreen from '../screens/ProyectosCampoScreen';
+import SincronizacionScreen from '../screens/SincronizacionScreen';
+import type { MainTabParamList } from './types';
+
+const Tab = createBottomTabNavigator<MainTabParamList>();
 
 export default function AppNavigator() {
   const { pendingCount } = useSyncStatus();
@@ -11,7 +18,7 @@ export default function AppNavigator() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <Header />
-      <Tabs
+      <Tab.Navigator
         screenOptions={{
           headerShown: false,
           tabBarActiveTintColor: colors.primary,
@@ -25,8 +32,9 @@ export default function AppNavigator() {
           tabBarLabelStyle: { fontSize: 12, fontWeight: '700' },
         }}
       >
-        <Tabs.Screen
-          name="index"
+        <Tab.Screen
+          name="Home"
+          component={HomeScreen}
           options={{
             title: 'Inicio',
             tabBarIcon: ({ color, size }) => (
@@ -38,8 +46,9 @@ export default function AppNavigator() {
             ),
           }}
         />
-        <Tabs.Screen
-          name="warehouses"
+        <Tab.Screen
+          name="Warehouses"
+          component={AlmacenesScreen}
           options={{
             title: 'Almacenes',
             tabBarIcon: ({ color, size }) => (
@@ -47,8 +56,9 @@ export default function AppNavigator() {
             ),
           }}
         />
-        <Tabs.Screen
-          name="field"
+        <Tab.Screen
+          name="Field"
+          component={ProyectosCampoScreen}
           options={{
             title: 'Campo',
             tabBarIcon: ({ color, size }) => (
@@ -60,8 +70,9 @@ export default function AppNavigator() {
             ),
           }}
         />
-        <Tabs.Screen
-          name="sync"
+        <Tab.Screen
+          name="Sync"
+          component={SincronizacionScreen}
           options={{
             title: 'Sincronizar',
             tabBarBadge: pendingCount > 0 ? pendingCount : undefined,
@@ -71,7 +82,7 @@ export default function AppNavigator() {
             ),
           }}
         />
-      </Tabs>
+      </Tab.Navigator>
     </View>
   );
 }

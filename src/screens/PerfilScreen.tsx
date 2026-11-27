@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   ActivityIndicator,
   Alert,
@@ -14,8 +15,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, spacing } from '../core/theme';
 import { useAuth } from '../services/auth/AuthProvider';
 import { useNetworkStatus } from '../services/sync/NetworkProvider';
+import type { RootStackParamList } from '../navigation/types';
 
 export default function PerfilScreen() {
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { user, signOut } = useAuth();
   const { isOnline } = useNetworkStatus();
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -24,7 +27,7 @@ export default function PerfilScreen() {
     setIsSigningOut(true);
     try {
       await signOut();
-      router.replace('/login');
+      navigation.replace('Login');
     } catch (error) {
       Alert.alert(
         'No se pudo cerrar la sesión',
@@ -52,7 +55,7 @@ export default function PerfilScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Volver"
-            onPress={() => router.back()}
+            onPress={() => navigation.goBack()}
             style={styles.backButton}
           >
             <MaterialCommunityIcons name="arrow-left" size={22} color={colors.primary} />

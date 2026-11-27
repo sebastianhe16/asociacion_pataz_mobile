@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { Animated, Image, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { colors, spacing } from '../core/theme';
 import { useAuth } from '../services/auth/AuthProvider';
+import type { RootStackParamList } from '../navigation/types';
 
 export default function SplashScreen() {
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { user, isLoading } = useAuth();
   const [animationComplete, setAnimationComplete] = useState(false);
   const [animation] = useState(() => new Animated.Value(0));
@@ -37,8 +40,8 @@ export default function SplashScreen() {
       return;
     }
     hasNavigated.current = true;
-    router.replace(user ? '/(tabs)' : '/login');
-  }, [animationComplete, isLoading, user]);
+    navigation.replace(user ? 'Main' : 'Login');
+  }, [animationComplete, isLoading, navigation, user]);
 
   const logoStyle = {
     opacity: animation,

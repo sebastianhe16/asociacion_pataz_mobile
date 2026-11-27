@@ -1,4 +1,5 @@
 import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
+import { Platform } from 'react-native';
 
 export interface NetworkSnapshot {
   isOnline: boolean;
@@ -12,13 +13,20 @@ let snapshot: NetworkSnapshot = {
   isConnected: null,
 };
 let unsubscribeNetInfo: (() => void) | null = null;
+let unsubscribeBrowserEvents: (() => void) | null = null;
 let initialization: Promise<void> | null = null;
 
-function publish(): void {
+function publishNative(): void {
   const isConnected = netInfoState?.isConnected ?? null;
   const isOnline = isConnected === true && netInfoState?.isInternetReachable !== false;
 
   snapshot = { isOnline, isConnected };
+  listeners.forEach((listener) => listener(snapshot));
+}
+
+function publishBrowser(): void {
+  const isConnected = typeof navigator === 'undefined' ? null : navigator.onLine;
+  snapshot = { isOnline: isConnected === true, isConnected };
   listeners.forEach((listener) => listener(snapshot));
 }
 
@@ -43,13 +51,27 @@ export function initializeNetworkService(): Promise<void> {
   }
 
   initialization = (async () => {
+    if (Platform.OS === 'web') {
+      publishBrowser();
+      if (typeof window !== 'undefined' && !unsubscribeBrowserEvents) {
+        const handleBrowserNetworkChange = () => publishBrowser();
+        window.addEventListener('online', handleBrowserNetworkChange);
+        window.addEventListener('offline', handleBrowserNetworkChange);
+        unsubscribeBrowserEvents = () => {
+          window.removeEventListener('online', handleBrowserNetworkChange);
+          window.removeEventListener('offline', handleBrowserNetworkChange);
+        };
+      }
+      return;
+    }
+
     netInfoState = await NetInfo.fetch();
-    publish();
+    publishNative();
 
     if (!unsubscribeNetInfo) {
       unsubscribeNetInfo = NetInfo.addEventListener((nextState) => {
         netInfoState = nextState;
-        publish();
+        publishNative();
       });
     }
   })().catch((error: unknown) => {

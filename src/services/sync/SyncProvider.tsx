@@ -8,7 +8,7 @@ import {
   useState,
   type PropsWithChildren,
 } from 'react';
-import { getSyncDashboardData } from '../../database/db';
+import { getPendingRecordCount, getSyncDashboardData } from '../../database/db';
 import type { SyncQueueEntry } from '../../core/types';
 import { useNetworkStatus } from './NetworkProvider';
 import { syncPendingRecords, type SyncResult } from './sisgeapSyncService';
@@ -21,13 +21,14 @@ interface SyncContextValue {
   pendingFieldCount: number;
   pendingOrderCount: number;
   pendingApprovalOrderCount: number;
+  refreshTrigger: number;
   queue: SyncQueueEntry[];
   isQueueLoading: boolean;
   isSyncing: boolean;
   lastResult: SyncResult | null;
   errorMessage: string | null;
   refreshPendingCount: () => Promise<void>;
-  synchronize: () => Promise<void>;
+  synchronize: () => Promise<SyncResult | null>;
 }
 
 const SyncContext = createContext<SyncContextValue | null>(null);
@@ -45,6 +46,10 @@ export function SyncProvider({ children }: PropsWithChildren) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastResult, setLastResult] = useState<SyncResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const isSyncingRef = useRef(false);
+  const syncRequestedRef = useRef(false);
+  const synchronizeRef = useRef<(() => Promise<SyncResult | null>) | null>(null);
   const pendingMovementCount = dashboard?.pendingMovementCount ?? 0;
   const pendingFieldCount = dashboard?.pendingFieldCount ?? 0;
   const pendingOrderCount = dashboard?.pendingOrderCount ?? 0;
@@ -56,6 +61,7 @@ export function SyncProvider({ children }: PropsWithChildren) {
     setIsQueueLoading(true);
     try {
       setDashboard(await getSyncDashboardData());
+      setRefreshTrigger((value) => value + 1);
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : 'No se pudo consultar la cola local.',
@@ -93,26 +99,56 @@ export function SyncProvider({ children }: PropsWithChildren) {
   }, []);
 
   const synchronize = useCallback(async () => {
-    if (isSyncing) {
-      return;
+    if (!isOnline) {
+      setErrorMessage('La sincronización requiere conexión a internet.');
+      return null;
+    }
+    if (isSyncingRef.current) {
+      syncRequestedRef.current = true;
+      return null;
     }
 
+    isSyncingRef.current = true;
     setIsSyncing(true);
     setErrorMessage(null);
 
+    let completed = false;
     try {
-      const result = await syncPendingRecords(isOnline);
+      let syncedCount = 0;
+      do {
+        syncRequestedRef.current = false;
+        const result = await syncPendingRecords(isOnline);
+        syncedCount += result.syncedCount;
+      } while (syncRequestedRef.current && isOnline);
+
+      const result = {
+        syncedCount,
+        remainingCount: await getPendingRecordCount(),
+      };
       setLastResult(result);
       await refreshPendingCount();
+      completed = true;
+      return result;
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : 'No se pudo sincronizar con SISGEAP.',
       );
       await refreshPendingCount();
+      return null;
     } finally {
+      isSyncingRef.current = false;
       setIsSyncing(false);
+      const shouldRunAgain = syncRequestedRef.current && isOnline && completed;
+      syncRequestedRef.current = false;
+      if (shouldRunAgain) {
+        void Promise.resolve().then(() => synchronizeRef.current?.());
+      }
     }
-  }, [isOnline, isSyncing, refreshPendingCount]);
+  }, [isOnline, refreshPendingCount]);
+
+  useEffect(() => {
+    synchronizeRef.current = synchronize;
+  }, [synchronize]);
 
   const previousOnlineState = useRef(isOnline);
   useEffect(() => {
@@ -130,6 +166,7 @@ export function SyncProvider({ children }: PropsWithChildren) {
       pendingFieldCount,
       pendingOrderCount,
       pendingApprovalOrderCount,
+      refreshTrigger,
       queue,
       isQueueLoading,
       isSyncing,
@@ -144,6 +181,7 @@ export function SyncProvider({ children }: PropsWithChildren) {
       pendingFieldCount,
       pendingOrderCount,
       pendingApprovalOrderCount,
+      refreshTrigger,
       queue,
       isQueueLoading,
       isSyncing,

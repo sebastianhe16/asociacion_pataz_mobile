@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import {
   ActivityIndicator,
   Pressable,
@@ -70,47 +70,57 @@ export default function ProyectosCampoScreen() {
   const [activeProject, setActiveProject] = useState<ProyectoCampoResumen | null>(null);
   const [searchText, setSearchText] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [toastVisible, setToastVisible] = useState(false);
-  const { refreshPendingCount } = useSyncStatus();
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const { refreshPendingCount, refreshTrigger } = useSyncStatus();
+  const isFocused = useIsFocused();
 
-  const refreshProjects = useCallback(async () => {
+  const refreshProjects = useCallback(async (isActive: () => boolean = () => true) => {
     try {
-      setProjects(await getProjectSummaries());
-      setErrorMessage(null);
+      const rows = await getProjectSummaries();
+      if (isActive()) {
+        setProjects(rows);
+        setErrorMessage(null);
+      }
     } catch (error) {
-      setErrorMessage(getErrorMessage(error));
+      if (isActive()) {
+        setErrorMessage(getErrorMessage(error));
+      }
     }
   }, []);
 
   useFocusEffect(
     useCallback(() => {
+      let active = true;
+      void refreshProjects(() => active);
+      return () => {
+        active = false;
+      };
+    }, [refreshProjects]),
+  );
+
+  const lastRefreshTrigger = useRef(refreshTrigger);
+  useEffect(() => {
+    if (lastRefreshTrigger.current === refreshTrigger) {
+      return undefined;
+    }
+    lastRefreshTrigger.current = refreshTrigger;
+    if (!isFocused) {
+      return undefined;
+    }
     let active = true;
-
-    getProjectSummaries()
-      .then((rows) => {
-        if (active) {
-          setProjects(rows);
-        }
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setErrorMessage(getErrorMessage(error));
-        }
-      });
-
+    void Promise.resolve().then(() => refreshProjects(() => active));
     return () => {
       active = false;
     };
-    }, []),
-  );
+  }, [isFocused, refreshProjects, refreshTrigger]);
 
   useEffect(() => {
-    if (!toastVisible) {
+    if (!toastMessage) {
       return undefined;
     }
-    const timer = setTimeout(() => setToastVisible(false), 4200);
+    const timer = setTimeout(() => setToastMessage(null), 4200);
     return () => clearTimeout(timer);
-  }, [toastVisible]);
+  }, [toastMessage]);
 
   const filteredProjects = useMemo(() => {
     const query = searchText.trim().toLocaleLowerCase();
@@ -130,9 +140,9 @@ export default function ProyectosCampoScreen() {
     [filteredProjects],
   );
 
-  const handleFichaSaved = useCallback(() => {
+  const handleFichaSaved = useCallback((message: string) => {
     setActiveProject(null);
-    setToastVisible(true);
+    setToastMessage(message);
     void refreshProjects();
     void refreshPendingCount();
   }, [refreshPendingCount, refreshProjects]);
@@ -254,16 +264,16 @@ export default function ProyectosCampoScreen() {
         )}
       </ScrollView>
 
-      {toastVisible && (
+      {toastMessage && (
         <View accessibilityLiveRegion="polite" style={styles.toast}>
           <MaterialCommunityIcons name="check-circle" size={21} color={colors.onPrimary} />
           <Text style={styles.toastText}>
-            Ficha guardada localmente · Sincronización pendiente
+            {toastMessage}
           </Text>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Cerrar aviso"
-            onPress={() => setToastVisible(false)}
+            onPress={() => setToastMessage(null)}
             hitSlop={8}
           >
             <MaterialCommunityIcons name="close" size={19} color={colors.onPrimary} />

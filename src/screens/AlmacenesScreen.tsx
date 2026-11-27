@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useFocusEffect, useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import {
   ActivityIndicator,
   Image,
@@ -24,6 +27,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type {
   Almacen,
   CategoriaInsumo,
+  EstadoOrdenCompra,
   OrigenMovimiento,
   TipoMovimiento,
   WarehouseMovementRecord,
@@ -47,6 +51,9 @@ import { useSyncStatus } from '../services/sync/SyncProvider';
 import { useAuth } from '../services/auth/AuthProvider';
 import { getInventoryBalances } from '../services/inventory/desbalanceService';
 import TrackingEnvioModal from './TrackingEnvioModal';
+import { ConnectionBanner, InfoBanner, StepIndicator } from '../components/StepIndicator';
+import { useNetworkStatus } from '../services/sync/NetworkProvider';
+import type { MainTabParamList } from '../navigation/types';
 
 type CategoryFilter = 'Todas' | CategoriaInsumo | 'Desbalances';
 
@@ -63,6 +70,8 @@ function getErrorMessage(error: unknown): string {
 }
 
 export default function AlmacenesScreen() {
+  const navigation = useNavigation<BottomTabNavigationProp<MainTabParamList, 'Warehouses'>>();
+  const route = useRoute<RouteProp<MainTabParamList, 'Warehouses'>>();
   const { user } = useAuth();
   const [warehouses, setWarehouses] = useState<Almacen[]>([]);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState('alm-lavasen');
@@ -94,6 +103,8 @@ export default function AlmacenesScreen() {
   const [isHandlingPhoto, setIsHandlingPhoto] = useState(false);
   const [actaVisible, setActaVisible] = useState(false);
   const [actaMovement, setActaMovement] = useState<WarehouseMovementRecord | null>(null);
+  const [actaJustRegistered, setActaJustRegistered] = useState(false);
+  const [actaSyncMessage, setActaSyncMessage] = useState<string | undefined>();
   const [trackingMovement, setTrackingMovement] = useState<WarehouseMovementRecord | null>(null);
   const [orderDeficitPrefill, setOrderDeficitPrefill] = useState<{
     insumoId: string;
@@ -103,9 +114,15 @@ export default function AlmacenesScreen() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [activeView, setActiveView] = useState<'INVENTARIO' | 'ORDENES'>('INVENTARIO');
+  const [initialOrderFilter, setInitialOrderFilter] = useState<EstadoOrdenCompra | undefined>();
+  const [orderFilterRequestId, setOrderFilterRequestId] = useState(0);
+  const [createOrderRequested, setCreateOrderRequested] = useState(false);
+  const [pendingDefaultMovement, setPendingDefaultMovement] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const scanHandled = useRef(false);
-  const { pendingApprovalOrderCount, refreshPendingCount } = useSyncStatus();
+  const { pendingApprovalOrderCount, refreshPendingCount, refreshTrigger, synchronize } = useSyncStatus();
+  const { isOnline } = useNetworkStatus();
+  const isFocused = useIsFocused();
 
   const selectedWarehouse = warehouses.find(({ id }) => id === selectedWarehouseId);
   const isLoading = loadedWarehouseId !== selectedWarehouseId;
@@ -137,104 +154,59 @@ export default function AlmacenesScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    let active = true;
-
-    getWarehouses()
-      .then((rows) => {
-        if (active) {
-          setWarehouses(rows);
-        }
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setScreenError(getErrorMessage(error));
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    getInventoryBalances()
-      .then((rows) => {
-        if (active) {
-          setInventoryBalances(rows);
-        }
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setScreenError(getErrorMessage(error));
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    getRecentWarehouseMovements(selectedWarehouseId)
-      .then((rows) => {
-        if (active) {
-          setRecentMovements(rows);
-        }
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setScreenError(getErrorMessage(error));
-        }
-      });
-    return () => {
-      active = false;
-    };
+  const reloadWarehouseData = useCallback(async (isActive: () => boolean = () => true) => {
+    try {
+      const [warehouseRows, balanceRows, movementRows, catalogRows, inventoryRows] =
+        await Promise.all([
+          getWarehouses(),
+          getInventoryBalances(),
+          getRecentWarehouseMovements(selectedWarehouseId),
+          getAllInventoryItems(),
+          getInventoryByWarehouse(selectedWarehouseId),
+        ]);
+      if (!isActive()) {
+        return;
+      }
+      setWarehouses(warehouseRows);
+      setInventoryBalances(balanceRows);
+      setRecentMovements(movementRows);
+      setInventoryCatalog(catalogRows);
+      setInventory(inventoryRows);
+      setLoadedWarehouseId(selectedWarehouseId);
+      setScreenError(null);
+    } catch (error) {
+      if (isActive()) {
+        setLoadedWarehouseId(selectedWarehouseId);
+        setScreenError(getErrorMessage(error));
+      }
+    }
   }, [selectedWarehouseId]);
 
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void reloadWarehouseData(() => active);
+      return () => {
+        active = false;
+      };
+    }, [reloadWarehouseData]),
+  );
+
+  const lastRefreshTrigger = useRef(refreshTrigger);
   useEffect(() => {
+    if (lastRefreshTrigger.current === refreshTrigger) {
+      return undefined;
+    }
+    lastRefreshTrigger.current = refreshTrigger;
+    if (!isFocused) {
+      return undefined;
+    }
     let active = true;
-
-    getAllInventoryItems()
-      .then((rows) => {
-        if (active) {
-          setInventoryCatalog(rows);
-        }
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setScreenError(getErrorMessage(error));
-        }
-      });
-
+    void Promise.resolve().then(() => reloadWarehouseData(() => active));
     return () => {
       active = false;
     };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-
-    getInventoryByWarehouse(selectedWarehouseId)
-      .then((rows) => {
-        if (active) {
-          setInventory(rows);
-          setLoadedWarehouseId(selectedWarehouseId);
-          setScreenError(null);
-        }
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setLoadedWarehouseId(selectedWarehouseId);
-          setScreenError(getErrorMessage(error));
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [selectedWarehouseId]);
+  }, [isFocused, refreshTrigger, reloadWarehouseData]);
 
   useEffect(() => {
     if (!toastMessage) {
@@ -263,13 +235,16 @@ export default function AlmacenesScreen() {
     [inventoryBalances],
   );
 
-  const openMovementForm = useCallback((item: InventoryItem | null = null) => {
+  const openMovementForm = useCallback((
+    item: InventoryItem | null = null,
+    prefill?: { type?: TipoMovimiento; quantity?: string; destination?: string },
+  ) => {
     setSelectedItem(item);
-    setMovementType('ENTRADA');
+    setMovementType(prefill?.type ?? 'ENTRADA');
     setEntryOrigin('COMPRA');
-    setQuantity('1');
-    setResponsible('');
-    setDestination('');
+    setQuantity(prefill?.quantity ?? '1');
+    setResponsible(user?.nombreCompleto ?? '');
+    setDestination(prefill?.destination ?? '');
     setRecipientName('');
     setRecipientDni('');
     setRecipientRole('');
@@ -281,7 +256,63 @@ export default function AlmacenesScreen() {
     setActaMovement(null);
     setFormError(null);
     setMovementOpen(true);
-  }, []);
+  }, [user?.nombreCompleto]);
+
+  useEffect(() => {
+    const params = route.params;
+    if (!params || !(
+      params.initialView
+      || params.initialCategoryFilter
+      || params.initialOrderFilter
+      || params.createOrder
+      || params.openMovement
+    )) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (params.initialView) {
+        setActiveView(params.initialView);
+      }
+      if (params.initialCategoryFilter) {
+        setCategoryFilter(params.initialCategoryFilter);
+      }
+      if (params.initialOrderFilter) {
+        setInitialOrderFilter(params.initialOrderFilter);
+        setOrderFilterRequestId((current) => current + 1);
+        setActiveView('ORDENES');
+      } else if (params.initialView) {
+        setInitialOrderFilter(undefined);
+        setOrderFilterRequestId((current) => current + 1);
+      }
+      if (params.createOrder) {
+        setCreateOrderRequested(true);
+        setActiveView('ORDENES');
+      }
+      if (params.openMovement) {
+        setPendingDefaultMovement(true);
+        setActiveView('INVENTARIO');
+      }
+      navigation.setParams({
+        initialView: undefined,
+        initialCategoryFilter: undefined,
+        initialOrderFilter: undefined,
+        createOrder: undefined,
+        openMovement: undefined,
+      });
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [navigation, route.params]);
+
+  useEffect(() => {
+    if (!pendingDefaultMovement || !inventoryCatalog.length) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      openMovementForm(null, { type: 'SALIDA' });
+      setPendingDefaultMovement(false);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [inventoryCatalog.length, openMovementForm, pendingDefaultMovement]);
 
   const captureDeliveryLocation = useCallback(async () => {
     setIsCapturingLocation(true);
@@ -435,15 +466,24 @@ export default function AlmacenesScreen() {
       } catch (error) {
         setScreenError(getErrorMessage(error));
       }
+      const syncResult = isOnline ? await synchronize() : null;
       await refreshPendingCount();
       setMovementOpen(false);
+      const wasSynced = syncResult !== null && syncResult.remainingCount === 0;
       if (movementType === 'SALIDA') {
         setActaMovement(movement);
-        setToastMessage(
-          `Salida registrada · ${parsedQuantity} ${selectedItem.unidad}. Pasaporte fiduciario disponible.`,
-        );
+        setActaJustRegistered(true);
+        setActaSyncMessage(wasSynced
+          ? 'Salida registrada y sincronizada con SISGEAP.'
+          : 'Salida registrada en el dispositivo; queda pendiente de sincronización.');
+        setActaVisible(true);
+        setToastMessage(wasSynced
+          ? `Salida registrada y sincronizada con SISGEAP · ${parsedQuantity} ${selectedItem.unidad}.`
+          : `Salida registrada en el dispositivo · ${parsedQuantity} ${selectedItem.unidad}.`);
       } else {
-        setToastMessage(`Entrada registrada · ${parsedQuantity} ${selectedItem.unidad}`);
+        setToastMessage(wasSynced
+          ? `Entrada registrada y sincronizada con SISGEAP · ${parsedQuantity} ${selectedItem.unidad}.`
+          : `Entrada registrada en el dispositivo · ${parsedQuantity} ${selectedItem.unidad}. Pendiente de sincronización.`);
       }
     } catch (error) {
       setFormError(getErrorMessage(error));
@@ -458,6 +498,7 @@ export default function AlmacenesScreen() {
     loadInventory,
     loadInventoryBalances,
     loadRecentMovements,
+    isOnline,
     movementType,
     quantity,
     recipientDni,
@@ -465,6 +506,7 @@ export default function AlmacenesScreen() {
     recipientRole,
     responsible,
     refreshPendingCount,
+    synchronize,
     signatureSvgPaths,
     selectedItem,
   ]);
@@ -489,18 +531,6 @@ export default function AlmacenesScreen() {
               color={activeView === 'INVENTARIO' ? colors.onPrimary : colors.textSecondary}
             />
 
-            <TrackingEnvioModal
-              key={trackingMovement?.id ?? 'tracking'}
-              visible={trackingMovement !== null}
-              movement={trackingMovement}
-              onClose={() => setTrackingMovement(null)}
-              onUpdated={(updated) => {
-                setTrackingMovement(updated);
-                setRecentMovements((current) =>
-                  current.map((movement) => movement.id === updated.id ? updated : movement),
-                );
-              }}
-            />
             <Text style={[styles.segmentText, activeView === 'INVENTARIO' && styles.segmentTextSelected]}>
               Inventario
             </Text>
@@ -533,6 +563,25 @@ export default function AlmacenesScreen() {
             deficitPrefill={orderDeficitPrefill}
             onDeficitPrefillConsumed={() => setOrderDeficitPrefill(null)}
             onOrdersChanged={() => void loadInventoryBalances()}
+            initialFilter={initialOrderFilter}
+            initialFilterRequestId={orderFilterRequestId}
+            createOrderRequested={createOrderRequested}
+            onCreateOrderRequestConsumed={() => setCreateOrderRequested(false)}
+            onStartDispatch={(order) => {
+              const requestedItem = order.items[0];
+              const catalogItem = requestedItem?.insumoId
+                ? inventoryCatalog.find((item) => item.id === requestedItem.insumoId) ?? null
+                : inventoryCatalog.find((item) =>
+                  item.nombre.toLocaleLowerCase() === requestedItem?.nombre.toLocaleLowerCase(),
+                ) ?? null;
+              setSelectedWarehouseId(order.almacenDestinoId);
+              setActiveView('INVENTARIO');
+              openMovementForm(catalogItem, {
+                type: 'SALIDA',
+                quantity: requestedItem ? String(requestedItem.cantidad) : '1',
+                destination: order.proyectoNombre,
+              });
+            }}
           />
         ) : (
           <>
@@ -762,6 +811,8 @@ export default function AlmacenesScreen() {
                 onTrack={() => setTrackingMovement(movement)}
                 onOpenActa={() => {
                   setActaMovement(movement);
+                  setActaJustRegistered(false);
+                  setActaSyncMessage(undefined);
                   setActaVisible(true);
                 }}
               />
@@ -769,12 +820,7 @@ export default function AlmacenesScreen() {
           </View>
         )}
 
-        <View style={styles.offlineNote}>
-          <MaterialCommunityIcons name="database-check-outline" size={18} color={colors.primary} />
-          <Text style={styles.offlineNoteText}>
-            Cambios guardados primero en este dispositivo. La sincronización queda pendiente.
-          </Text>
-        </View>
+        <ConnectionBanner isOnline={isOnline} />
           </>
         )}
       </ScrollView>
@@ -786,7 +832,11 @@ export default function AlmacenesScreen() {
           {actaMovement?.hashSha256 && !actaVisible && (
             <Pressable
               accessibilityRole="button"
-              onPress={() => setActaVisible(true)}
+              onPress={() => {
+                setActaJustRegistered(false);
+                setActaSyncMessage(undefined);
+                setActaVisible(true);
+              }}
               hitSlop={8}
             >
               <Text style={styles.toastActionText}>Ver acta</Text>
@@ -823,6 +873,7 @@ export default function AlmacenesScreen() {
         signatureSvgPaths={signatureSvgPaths}
         signatureRevision={signatureRevision}
         passportNotice={passportNotice}
+        isOnline={isOnline}
         isCapturingLocation={isCapturingLocation}
         isHandlingPhoto={isHandlingPhoto}
         onSetRecipientName={setRecipientName}
@@ -843,7 +894,27 @@ export default function AlmacenesScreen() {
       <ActaEntregaModal
         visible={actaVisible}
         movement={actaMovement}
+        showPostSaveActions={actaJustRegistered}
+        successMessage={actaSyncMessage}
+        onOpenTracking={() => {
+          setActaVisible(false);
+          if (actaMovement) {
+            setTrackingMovement(actaMovement);
+          }
+        }}
         onClose={() => setActaVisible(false)}
+      />
+      <TrackingEnvioModal
+        key={trackingMovement?.id ?? 'tracking'}
+        visible={trackingMovement !== null}
+        movement={trackingMovement}
+        onClose={() => setTrackingMovement(null)}
+        onUpdated={(updated) => {
+          setTrackingMovement(updated);
+          setRecentMovements((current) =>
+            current.map((movement) => movement.id === updated.id ? updated : movement),
+          );
+        }}
       />
 
       <ScannerModal
@@ -1079,6 +1150,7 @@ interface MovementModalProps {
   signatureSvgPaths: string | null;
   signatureRevision: number;
   passportNotice: string | null;
+  isOnline: boolean;
   isCapturingLocation: boolean;
   isHandlingPhoto: boolean;
   error: string | null;
@@ -1118,6 +1190,7 @@ function MovementModal({
   signatureSvgPaths,
   signatureRevision,
   passportNotice,
+  isOnline,
   isCapturingLocation,
   isHandlingPhoto,
   error,
@@ -1146,6 +1219,16 @@ function MovementModal({
       .toLocaleLowerCase()
       .includes(itemSearch.trim().toLocaleLowerCase()),
   );
+  const parsedQuantity = Number(quantity.replace(',', '.'));
+  const itemAndQuantityReady = Boolean(item)
+    && Number.isFinite(parsedQuantity)
+    && parsedQuantity > 0;
+  const destinationReady = destination.trim().length > 0
+    && recipientName.trim().length > 0
+    && /^\d{8}$/.test(recipientDni)
+    && recipientRole.trim().length > 0;
+  const currentStep = !itemAndQuantityReady ? 0 : !destinationReady ? 1 : 2;
+  const stockDifference = item ? item.stockActual - parsedQuantity : 0;
 
   return (
     <Modal
@@ -1192,6 +1275,17 @@ function MovementModal({
                 onPress={() => onSetType('SALIDA')}
               />
             </View>
+
+            {type === 'SALIDA' && (
+              <>
+                <StepIndicator
+                  steps={['Insumo y cantidad', 'Destino y receptor', 'Evidencia y firma']}
+                  currentStep={currentStep}
+                />
+                <InfoBanner message="Completa la salida paso a paso y registra la evidencia del receptor." />
+                <StepCardHeading number={1} title="Selección de insumo y cantidad" />
+              </>
+            )}
 
             {type === 'ENTRADA' && (
               <View style={styles.formSection}>
@@ -1331,6 +1425,15 @@ function MovementModal({
                 />
                 <Text style={styles.unitSuffix}>{item?.unidad ?? 'unidades'}</Text>
               </View>
+              {type === 'SALIDA' && item && Number.isFinite(parsedQuantity) && parsedQuantity > 0 && (
+                <InfoBanner
+                  message={stockDifference >= 0
+                    ? `Stock suficiente · ${stockDifference} ${item.unidad} disponibles después de esta salida`
+                    : `Déficit de ${Math.abs(stockDifference)} ${item.unidad} · verifica la cantidad antes de registrar`}
+                  tone={stockDifference >= 0 ? 'success' : 'warning'}
+                  icon={stockDifference >= 0 ? 'check-circle-outline' : 'alert-outline'}
+                />
+              )}
             </View>
 
             <View style={styles.formSection}>
@@ -1345,6 +1448,10 @@ function MovementModal({
                 autoCapitalize="words"
               />
             </View>
+
+            {type === 'SALIDA' && (
+              <StepCardHeading number={2} title="Destino y representante receptor" />
+            )}
 
             <View style={styles.formSection}>
               <Text style={styles.inputLabel}>
@@ -1417,6 +1524,8 @@ function MovementModal({
                     />
                   </View>
                 </View>
+
+                <StepCardHeading number={3} title="Evidencia fiduciaria y firma" />
 
                 <View style={styles.formSection}>
                   <Text style={styles.inputLabel}>Ubicación de la entrega</Text>
@@ -1499,12 +1608,7 @@ function MovementModal({
               </View>
             )}
 
-            <View style={styles.offlineFormNote}>
-              <MaterialCommunityIcons name="cloud-off-outline" size={18} color={colors.offline} />
-              <Text style={styles.offlineFormText}>
-                Se guardará localmente como PENDIENTE y se sincronizará cuando haya conexión.
-              </Text>
-            </View>
+            <ConnectionBanner isOnline={isOnline} />
 
             {error && (
               <View style={styles.formError}>
@@ -1524,7 +1628,9 @@ function MovementModal({
               ) : (
                 <>
                   <MaterialCommunityIcons name="content-save-check-outline" size={20} color={colors.onPrimary} />
-                  <Text style={styles.submitButtonText}>Registrar en este dispositivo</Text>
+                  <Text style={styles.submitButtonText}>
+                    {type === 'SALIDA' ? 'Confirmar salida de almacén' : 'Registrar entrada'}
+                  </Text>
                 </>
               )}
             </Pressable>
@@ -1540,6 +1646,17 @@ interface MovementTypeButtonProps {
   icon: keyof typeof MaterialCommunityIcons.glyphMap;
   label: string;
   onPress: () => void;
+}
+
+function StepCardHeading({ number, title }: { number: number; title: string }) {
+  return (
+    <View style={styles.stepCardHeading}>
+      <View style={styles.stepCardNumber}>
+        <Text style={styles.stepCardNumberText}>{number}</Text>
+      </View>
+      <Text style={styles.stepCardTitle}>{title}</Text>
+    </View>
+  );
 }
 
 function MovementTypeButton({ active, icon, label, onPress }: MovementTypeButtonProps) {
@@ -2228,6 +2345,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.sm,
   },
+  stepCardHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    marginTop: spacing.xs,
+    paddingVertical: 3,
+  },
+  stepCardNumber: {
+    width: 25,
+    height: 25,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 9,
+    backgroundColor: colors.primary,
+  },
+  stepCardNumberText: { color: colors.onPrimary, fontSize: 11, fontWeight: '800' },
+  stepCardTitle: { color: colors.text, fontSize: 12, fontWeight: '800' },
   originRow: {
     flexDirection: 'row',
     gap: spacing.sm,

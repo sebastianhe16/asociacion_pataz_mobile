@@ -17,12 +17,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type { EjeProyecto, ProyectoCampoResumen } from '../core/types';
 import { colors, spacing } from '../core/theme';
 import { insertFichaCampo } from '../database/db';
+import { ConnectionBanner, InfoBanner } from '../components/StepIndicator';
+import { useNetworkStatus } from '../services/sync/NetworkProvider';
+import { useSyncStatus } from '../services/sync/SyncProvider';
 
 interface NuevaFichaCampoScreenProps {
   visible: boolean;
   project: ProyectoCampoResumen;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (message: string) => void;
 }
 
 interface CapturedCoordinates {
@@ -84,6 +87,8 @@ export default function NuevaFichaCampoScreen({
   const [formError, setFormError] = useState<string | null>(null);
   const [isCapturingLocation, setIsCapturingLocation] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const { isOnline } = useNetworkStatus();
+  const { synchronize } = useSyncStatus();
 
   const activities = useMemo(
     () => ACTIVITIES_BY_AXIS[project.eje],
@@ -160,14 +165,15 @@ export default function NuevaFichaCampoScreen({
         latitud: coordinates?.latitude ?? null,
         longitud: coordinates?.longitude ?? null,
       });
+      const syncResult = isOnline ? await synchronize() : null;
+      onSaved(syncResult !== null && syncResult.remainingCount === 0
+        ? 'Ficha registrada y sincronizada con SISGEAP.'
+        : 'Ficha guardada en el dispositivo; queda pendiente de sincronización.');
     } catch (error) {
       setFormError(getErrorMessage(error));
+    } finally {
       setIsSaving(false);
-      return;
     }
-
-    setIsSaving(false);
-    onSaved();
   };
 
   return (
@@ -215,6 +221,9 @@ export default function NuevaFichaCampoScreen({
                 </View>
               </View>
             </View>
+
+            <InfoBanner message="Registra la visita del beneficiario y documenta el resultado de la actividad." />
+            <ConnectionBanner isOnline={isOnline} />
 
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Datos del beneficiario</Text>
@@ -380,13 +389,6 @@ export default function NuevaFichaCampoScreen({
                 <Text style={styles.errorText}>{formError}</Text>
               </View>
             )}
-
-            <View style={styles.offlineNote}>
-              <MaterialCommunityIcons name="database-check-outline" size={19} color={colors.primary} />
-              <Text style={styles.offlineText}>
-                La ficha se guarda primero en el dispositivo y se sincroniza cuando haya conexión.
-              </Text>
-            </View>
 
             <View style={styles.footerActions}>
               <Pressable

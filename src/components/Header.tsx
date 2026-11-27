@@ -1,12 +1,15 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { useNavigation } from '@react-navigation/native';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, spacing } from '../core/theme';
 import { useAuth } from '../services/auth/AuthProvider';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../navigation/types';
 
 export function Header() {
   const { user } = useAuth();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   return (
     <SafeAreaView edges={['top']} style={styles.safeArea}>
@@ -24,7 +27,7 @@ export function Header() {
           accessibilityRole="button"
           accessibilityLabel={`Abrir perfil de ${user?.nombreCompleto ?? 'usuario'}`}
           activeOpacity={0.75}
-          onPress={() => router.push('/profile')}
+          onPress={() => navigation.navigate('Profile')}
           style={styles.profile}
         >
           {user ? (

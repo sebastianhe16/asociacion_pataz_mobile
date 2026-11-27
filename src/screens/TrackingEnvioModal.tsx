@@ -17,11 +17,14 @@ import type {
   WarehouseMovementRecord,
 } from '../core/types';
 import { colors, spacing } from '../core/theme';
+import { InfoBanner, StepIndicator } from '../components/StepIndicator';
 import {
   advanceShipmentTracking,
   getWarehouseMovementDetails,
 } from '../database/db';
 import { useAuth } from '../services/auth/AuthProvider';
+import { useNetworkStatus } from '../services/sync/NetworkProvider';
+import { useSyncStatus } from '../services/sync/SyncProvider';
 
 const STEPS: { estado: EstadoEnvio; titulo: string; icon: keyof typeof MaterialCommunityIcons.glyphMap }[] = [
   { estado: 'REGISTRADO_ALMACEN', titulo: 'Registrado en Almacén', icon: 'warehouse' },
@@ -79,10 +82,13 @@ export default function TrackingEnvioModal({
   onUpdated,
 }: TrackingEnvioModalProps) {
   const { user } = useAuth();
+  const { isOnline } = useNetworkStatus();
+  const { synchronize } = useSyncStatus();
   const [currentMovement, setCurrentMovement] = useState<WarehouseMovementRecord | null>(movement);
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [confirmationMessage, setConfirmationMessage] = useState<string | null>(null);
   const canAdvance = user?.roleKey === 'ADMIN' || user?.roleKey === 'LOGISTICA';
   const movementId = movement?.id;
 
@@ -135,7 +141,14 @@ export default function TrackingEnvioModal({
       const updated = await advanceShipmentTracking(currentMovement.id, note, user);
       setCurrentMovement(updated);
       setNote('');
-      onUpdated?.(updated);
+      const syncResult = isOnline ? await synchronize() : null;
+      const latest = await getWarehouseMovementDetails(updated.id);
+      const finalMovement = latest ?? updated;
+      setCurrentMovement(finalMovement);
+      setConfirmationMessage(syncResult !== null && syncResult.remainingCount === 0
+        ? 'Etapa actualizada y sincronizada con SISGEAP.'
+        : 'Etapa actualizada en el dispositivo; queda pendiente de sincronización.');
+      onUpdated?.(finalMovement);
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : 'No se pudo actualizar el seguimiento.');
     } finally {
@@ -176,6 +189,17 @@ export default function TrackingEnvioModal({
         >
           {currentMovement ? (
             <>
+              <StepIndicator
+                steps={['Almacén', 'En Ruta', 'En Destino', 'Entregado']}
+                currentStep={Math.max(currentStep, 0)}
+              />
+              {confirmationMessage && (
+                <InfoBanner
+                  message={confirmationMessage}
+                  tone={confirmationMessage.includes('sincronizada') ? 'success' : 'warning'}
+                  icon="check-circle-outline"
+                />
+              )}
               <View style={styles.summaryCard}>
                 <View style={styles.summaryRow}>
                   <MaterialCommunityIcons name="warehouse" size={18} color={colors.primary} />
@@ -286,7 +310,13 @@ export default function TrackingEnvioModal({
                     ) : (
                       <>
                         <MaterialCommunityIcons name="arrow-right-circle-outline" size={19} color={colors.onPrimary} />
-                        <Text style={styles.advanceButtonText}>Avanzar a {nextStep.titulo}</Text>
+                        <Text style={styles.advanceButtonText}>
+                          {currentStep === 0
+                            ? 'Confirmar salida a ruta (En Tránsito)'
+                            : currentStep === 1
+                              ? 'Confirmar llegada a destino (En Punto de Entrega)'
+                              : 'Confirmar entrega final en destino'}
+                        </Text>
                       </>
                     )}
                   </Pressable>

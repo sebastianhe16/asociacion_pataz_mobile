@@ -16,10 +16,14 @@ import type { WarehouseMovementRecord } from '../core/types';
 import { colors, spacing } from '../core/theme';
 import { shareDeliveryActPdf } from '../services/pdf/actaPdfService';
 import { parseSignaturePaths, createPassportHash } from '../services/warehouse/passportIntegrity';
+import { InfoBanner } from '../components/StepIndicator';
 
 interface ActaEntregaModalProps {
   visible: boolean;
   movement: WarehouseMovementRecord | null;
+  showPostSaveActions?: boolean;
+  successMessage?: string;
+  onOpenTracking?: () => void;
   onClose: () => void;
 }
 
@@ -54,6 +58,9 @@ function PassportField({ label, value }: { label: string; value: string }) {
 export default function ActaEntregaModal({
   visible,
   movement,
+  showPostSaveActions = false,
+  successMessage,
+  onOpenTracking,
   onClose,
 }: ActaEntregaModalProps) {
   const [integrityResult, setIntegrityResult] = useState<IntegrityResult | null>(null);
@@ -170,6 +177,16 @@ export default function ActaEntregaModal({
             <MaterialCommunityIcons name="close" size={22} color={colors.text} />
           </Pressable>
         </View>
+
+        {showPostSaveActions && successMessage && (
+          <View style={styles.successBanner}>
+            <InfoBanner
+              message={successMessage}
+              tone={successMessage.includes('sincronizada') ? 'success' : 'warning'}
+              icon="check-circle-outline"
+            />
+          </View>
+        )}
 
         {movement && (
           <>
@@ -311,10 +328,22 @@ export default function ActaEntregaModal({
                 ) : (
                   <>
                     <MaterialCommunityIcons name="file-pdf-box" size={21} color={colors.onPrimary} />
-                    <Text style={styles.exportButtonText}>Descargar / Compartir Acta en PDF</Text>
+                    <Text style={styles.exportButtonText}>
+                      {showPostSaveActions ? '1. Descargar Acta en PDF' : 'Descargar / Compartir Acta en PDF'}
+                    </Text>
                   </>
                 )}
               </Pressable>
+              {showPostSaveActions && onOpenTracking && (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={onOpenTracking}
+                  style={styles.trackingButton}
+                >
+                  <MaterialCommunityIcons name="truck-fast-outline" size={20} color={colors.primary} />
+                  <Text style={styles.trackingButtonText}>2. Ver seguimiento del envío</Text>
+                </Pressable>
+              )}
             </View>
           </>
         )}
@@ -484,6 +513,7 @@ const styles = StyleSheet.create({
     borderTopColor: colors.border,
     backgroundColor: colors.background,
   },
+  successBanner: { paddingHorizontal: spacing.md, paddingTop: spacing.sm },
   exportButton: {
     minHeight: 52,
     flexDirection: 'row',
@@ -498,5 +528,17 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
   },
+  trackingButton: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    borderRadius: 13,
+    backgroundColor: colors.surface,
+  },
+  trackingButtonText: { color: colors.primary, fontSize: 12, fontWeight: '800' },
   disabledButton: { opacity: 0.6 },
 });

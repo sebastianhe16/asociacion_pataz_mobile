@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   ActivityIndicator,
   Image,
@@ -17,20 +18,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, spacing } from '../core/theme';
 import { mockUsers } from '../data/mockUsers';
 import { useAuth } from '../services/auth/AuthProvider';
+import type { RootStackParamList } from '../navigation/types';
 
 export default function LoginScreen() {
-  const { user, isLoading, authError, signIn } = useAuth();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const { isLoading, authError, signIn } = useAuth();
   const [correo, setCorreo] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(authError);
-
-  useEffect(() => {
-    if (!isLoading && user) {
-      router.replace('/(tabs)');
-    }
-  }, [isLoading, user]);
 
   const selectAccount = (account: (typeof mockUsers)[number]) => {
     setCorreo(account.correo);
@@ -48,7 +45,7 @@ export default function LoginScreen() {
     setFormError(null);
     try {
       await signIn(correo, password);
-      router.replace('/(tabs)');
+      navigation.replace('Main');
     } catch (error) {
       setFormError(error instanceof Error ? error.message : 'No se pudo iniciar sesión.');
     } finally {

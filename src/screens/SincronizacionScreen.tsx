@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import {
   ActivityIndicator,
   Pressable,
@@ -41,54 +42,61 @@ export default function SincronizacionScreen() {
     lastResult,
     errorMessage,
     refreshPendingCount,
+    refreshTrigger,
     synchronize,
   } = useSyncStatus();
+  const isFocused = useIsFocused();
   const [recentLogs, setRecentLogs] = useState<SyncLog[]>([]);
   const [isLogLoading, setIsLogLoading] = useState(true);
   const [logError, setLogError] = useState<string | null>(null);
 
-  const refreshLogs = useCallback(async () => {
+  const loadRecentLogs = useCallback(async (isActive: () => boolean = () => true) => {
     try {
-      setRecentLogs(await getRecentSyncLogs());
-      setLogError(null);
+      const logs = await getRecentSyncLogs();
+      if (isActive()) {
+        setRecentLogs(logs);
+        setLogError(null);
+      }
     } catch (error) {
-      setLogError(
-        error instanceof Error ? error.message : 'No se pudo cargar el historial de sincronización.',
-      );
+      if (isActive()) {
+        setLogError(
+          error instanceof Error ? error.message : 'No se pudo cargar el historial de sincronización.',
+        );
+      }
     } finally {
-      setIsLogLoading(false);
+      if (isActive()) {
+        setIsLogLoading(false);
+      }
     }
   }, []);
 
+  const refreshLogs = useCallback(() => loadRecentLogs(), [loadRecentLogs]);
+
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void loadRecentLogs(() => active);
+      return () => {
+        active = false;
+      };
+    }, [loadRecentLogs]),
+  );
+
+  const lastRefreshTrigger = useRef(refreshTrigger);
   useEffect(() => {
+    if (lastRefreshTrigger.current === refreshTrigger) {
+      return undefined;
+    }
+    lastRefreshTrigger.current = refreshTrigger;
+    if (!isFocused) {
+      return undefined;
+    }
     let active = true;
-
-    getRecentSyncLogs()
-      .then((logs) => {
-        if (active) {
-          setRecentLogs(logs);
-          setLogError(null);
-        }
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setLogError(
-            error instanceof Error
-              ? error.message
-              : 'No se pudo cargar el historial de sincronización.',
-          );
-        }
-      })
-      .finally(() => {
-        if (active) {
-          setIsLogLoading(false);
-        }
-      });
-
+    void Promise.resolve().then(() => loadRecentLogs(() => active));
     return () => {
       active = false;
     };
-  }, [pendingCount, refreshLogs]);
+  }, [isFocused, loadRecentLogs, refreshTrigger]);
 
   const successVisible =
     lastResult !== null && lastResult.syncedCount > 0 && pendingCount === 0;

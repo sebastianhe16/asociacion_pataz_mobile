@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -10,6 +10,7 @@ import {
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { EstadoOrdenCompra, OrdenCompra } from '../core/types';
 import { colors, spacing } from '../core/theme';
+import { InfoBanner, StepIndicator } from '../components/StepIndicator';
 import {
   getPurchaseOrders,
   markPurchaseOrderAttended,
@@ -19,6 +20,7 @@ import { useAuth } from '../services/auth/AuthProvider';
 import { useSyncStatus } from '../services/sync/SyncProvider';
 import DetalleOrdenCompraModal from './DetalleOrdenCompraModal';
 import NuevaOrdenCompraModal from './NuevaOrdenCompraModal';
+import { useNetworkStatus } from '../services/sync/NetworkProvider';
 
 type OrderFilter = 'TODAS' | EstadoOrdenCompra;
 
@@ -46,6 +48,11 @@ interface OrdenesCompraViewProps {
   deficitPrefill: DeficitOrderPrefill | null;
   onDeficitPrefillConsumed: () => void;
   onOrdersChanged: () => void;
+  initialFilter?: OrderFilter;
+  initialFilterRequestId?: number;
+  createOrderRequested?: boolean;
+  onCreateOrderRequestConsumed?: () => void;
+  onStartDispatch: (order: OrdenCompra) => void;
 }
 
 function formatDate(value: string): string {
@@ -57,15 +64,22 @@ export default function OrdenesCompraView({
   deficitPrefill,
   onDeficitPrefillConsumed,
   onOrdersChanged,
+  initialFilter,
+  initialFilterRequestId,
+  createOrderRequested = false,
+  onCreateOrderRequestConsumed,
+  onStartDispatch,
 }: OrdenesCompraViewProps) {
   const { user } = useAuth();
-  const { refreshPendingCount } = useSyncStatus();
+  const { refreshPendingCount, refreshTrigger, synchronize } = useSyncStatus();
+  const { isOnline } = useNetworkStatus();
   const [orders, setOrders] = useState<OrdenCompra[]>([]);
-  const [filter, setFilter] = useState<OrderFilter>('TODAS');
+  const [filter, setFilter] = useState<OrderFilter>(initialFilter ?? 'TODAS');
   const [selectedOrder, setSelectedOrder] = useState<OrdenCompra | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmationMessage, setConfirmationMessage] = useState<string | null>(null);
 
   const loadOrders = useCallback(async () => {
     try {
@@ -77,6 +91,22 @@ export default function OrdenesCompraView({
       setIsLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setFilter(initialFilter ?? 'TODAS'), 0);
+    return () => clearTimeout(timer);
+  }, [initialFilter, initialFilterRequestId]);
+
+  useEffect(() => {
+    if (createOrderRequested) {
+      const timer = setTimeout(() => {
+        setIsCreating(true);
+        onCreateOrderRequestConsumed?.();
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+    return undefined;
+  }, [createOrderRequested, onCreateOrderRequestConsumed]);
 
   useEffect(() => {
     let active = true;
@@ -106,6 +136,15 @@ export default function OrdenesCompraView({
     };
   }, []);
 
+  const lastRefreshTrigger = useRef(refreshTrigger);
+  useEffect(() => {
+    if (lastRefreshTrigger.current === refreshTrigger) {
+      return;
+    }
+    lastRefreshTrigger.current = refreshTrigger;
+    void loadOrders();
+  }, [loadOrders, refreshTrigger]);
+
   const pendingCount = useMemo(
     () => orders.filter((order) => order.estado === 'PENDIENTE').length,
     [orders],
@@ -120,6 +159,9 @@ export default function OrdenesCompraView({
       throw new Error('No se pudo identificar la orden o la sesión actual.');
     }
     await reviewPurchaseOrder(selectedOrder.id, decision, observation, user);
+    if (isOnline) {
+      await synchronize();
+    }
     setSelectedOrder(null);
     await Promise.all([loadOrders(), refreshPendingCount()]);
     onOrdersChanged();
@@ -130,13 +172,17 @@ export default function OrdenesCompraView({
       throw new Error('No se pudo identificar la orden o la sesión actual.');
     }
     await markPurchaseOrderAttended(selectedOrder.id, user);
+    if (isOnline) {
+      await synchronize();
+    }
     setSelectedOrder(null);
     await Promise.all([loadOrders(), refreshPendingCount()]);
     onOrdersChanged();
   }
 
-  async function handleCreated() {
+  async function handleCreated(message: string) {
     setIsCreating(false);
+    setConfirmationMessage(message);
     await Promise.all([loadOrders(), refreshPendingCount()]);
     onDeficitPrefillConsumed();
     onOrdersChanged();
@@ -162,6 +208,14 @@ export default function OrdenesCompraView({
           <Text style={styles.summaryLabel}>Pendientes de aprobación</Text>
         </View>
       </View>
+
+      {confirmationMessage && (
+        <InfoBanner
+          message={confirmationMessage}
+          tone={confirmationMessage.includes('sincronizada') ? 'success' : 'warning'}
+          icon="check-circle-outline"
+        />
+      )}
 
       {user?.roleKey === 'CAMPO' && (
         <Pressable
@@ -255,7 +309,7 @@ export default function OrdenesCompraView({
             setIsCreating(false);
             onDeficitPrefillConsumed();
           }}
-          onCreated={() => void handleCreated()}
+          onCreated={(message) => void handleCreated(message)}
         />
       )}
       {user && (
@@ -266,6 +320,13 @@ export default function OrdenesCompraView({
           onClose={() => setSelectedOrder(null)}
           onReview={handleReview}
           onAttend={handleAttend}
+          onRegisterExit={() => {
+            if (selectedOrder) {
+              const order = selectedOrder;
+              setSelectedOrder(null);
+              onStartDispatch(order);
+            }
+          }}
         />
       )}
     </View>
@@ -296,6 +357,11 @@ function OrderCard({ order, onPress }: { order: OrdenCompra; onPress: () => void
           <MaterialCommunityIcons name="warehouse" size={14} color={colors.textSecondary} />
           <Text style={styles.orderDetailText}>{order.almacenDestinoNombre}</Text>
         </View>
+        <StepIndicator
+          compact
+          steps={['Solicitada', 'Aprobada', 'Atendida']}
+          currentStep={order.estado === 'ATENDIDA' ? 2 : order.estado === 'APROBADA' ? 1 : 0}
+        />
         <View style={styles.priorityLabel}>
           <View style={[styles.priorityDot, order.prioridad === 'URGENTE' && styles.urgentDot]} />
           <Text style={styles.priorityText}>{order.prioridad}</Text>

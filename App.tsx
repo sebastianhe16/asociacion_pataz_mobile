@@ -1,13 +1,24 @@
 import { useEffect, useState, type PropsWithChildren } from 'react';
 import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Stack } from 'expo-router';
+import {
+  NavigationContainer,
+  NavigationIndependentTree,
+} from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { initDatabase } from './src/database/db';
-import { AuthProvider, useAuth } from './src/services/auth/AuthProvider';
+import { AuthProvider } from './src/services/auth/AuthProvider';
 import { NetworkProvider } from './src/services/sync/NetworkProvider';
 import { SyncProvider } from './src/services/sync/SyncProvider';
 import { colors, spacing } from './src/core/theme';
+import AppNavigator from './src/navigation/AppNavigator';
+import type { RootStackParamList } from './src/navigation/types';
+import SplashScreen from './src/screens/SplashScreen';
+import LoginScreen from './src/screens/LoginScreen';
+import PerfilScreen from './src/screens/PerfilScreen';
+
+const RootStack = createNativeStackNavigator<RootStackParamList>();
 
 export default function App() {
   const [databaseReady, setDatabaseReady] = useState(false);
@@ -85,7 +96,11 @@ export default function App() {
           <NetworkProvider>
             <SyncProvider>
               <StatusBar style="dark" />
-              <RootNavigator />
+              <NavigationIndependentTree>
+                <NavigationContainer>
+                  <RootNavigator />
+                </NavigationContainer>
+              </NavigationIndependentTree>
             </SyncProvider>
           </NetworkProvider>
         </AuthProvider>
@@ -105,19 +120,16 @@ function ResponsiveViewport({ children }: PropsWithChildren) {
 }
 
 function RootNavigator() {
-  const { user, isLoading } = useAuth();
-
   return (
-    <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="index" options={{ animation: 'fade', gestureEnabled: false }} />
-      <Stack.Protected guard={isLoading || !user} redirectTo="/(tabs)">
-        <Stack.Screen name="login" options={{ animation: 'fade' }} />
-      </Stack.Protected>
-      <Stack.Protected guard={isLoading || user !== null} redirectTo="/login">
-        <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
-        <Stack.Screen name="profile" options={{ animation: 'slide_from_right' }} />
-      </Stack.Protected>
-    </Stack>
+    <RootStack.Navigator
+      initialRouteName="Splash"
+      screenOptions={{ headerShown: false }}
+    >
+      <RootStack.Screen name="Splash" component={SplashScreen} />
+      <RootStack.Screen name="Login" component={LoginScreen} />
+      <RootStack.Screen name="Main" component={AppNavigator} />
+      <RootStack.Screen name="Profile" component={PerfilScreen} />
+    </RootStack.Navigator>
   );
 }
 

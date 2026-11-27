@@ -30,6 +30,9 @@ import {
   getWarehouses,
   type InventoryItem,
 } from '../database/db';
+import { ConnectionBanner, InfoBanner } from '../components/StepIndicator';
+import { useNetworkStatus } from '../services/sync/NetworkProvider';
+import { useSyncStatus } from '../services/sync/SyncProvider';
 
 interface OrderItemDraft {
   id: string;
@@ -45,7 +48,7 @@ interface NuevaOrdenCompraModalProps {
   user: UsuarioSesion;
   deficitPrefill: { insumoId: string; cantidad: number } | null;
   onClose: () => void;
-  onCreated: () => void;
+  onCreated: (message: string) => void;
 }
 
 const PRIORITIES: PrioridadOrdenCompra[] = ['NORMAL', 'ALTA', 'URGENTE'];
@@ -79,6 +82,8 @@ export default function NuevaOrdenCompraModal({
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { isOnline } = useNetworkStatus();
+  const { synchronize } = useSyncStatus();
 
   useEffect(() => {
     if (!visible) {
@@ -176,11 +181,14 @@ export default function NuevaOrdenCompraModal({
     setIsSaving(true);
     try {
       await createPurchaseOrder(input, user);
+      const syncResult = isOnline ? await synchronize() : null;
       setItems([createEmptyItem()]);
       setJustification('');
       setPriority('NORMAL');
       setError(null);
-      onCreated();
+      onCreated(syncResult !== null && syncResult.remainingCount === 0
+        ? 'Orden registrada y sincronizada con SISGEAP.'
+        : 'Orden guardada en el dispositivo; queda pendiente de sincronización.');
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'No se pudo registrar la orden.');
     } finally {
@@ -221,6 +229,8 @@ export default function NuevaOrdenCompraModal({
               </View>
             ) : (
               <>
+                <InfoBanner message="Prepara el requerimiento para revisión y aprobación según el flujo administrativo." />
+                <ConnectionBanner isOnline={isOnline} />
                 <View style={styles.section}>
                   <Text style={styles.label}>Proyecto *</Text>
                   <View style={styles.choiceList}>
@@ -432,7 +442,7 @@ export default function NuevaOrdenCompraModal({
                 <MaterialCommunityIcons name="content-save-outline" size={20} color={colors.onPrimary} />
               )}
               <Text style={styles.submitButtonText}>
-                {isSaving ? 'Guardando localmente…' : 'Enviar a aprobación'}
+                {isSaving ? 'Guardando y sincronizando…' : 'Enviar a aprobación'}
               </Text>
             </Pressable>
           </ScrollView>
